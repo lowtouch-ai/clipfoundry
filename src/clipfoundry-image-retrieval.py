@@ -18,7 +18,7 @@ def fetch_and_inspect_image(**context):
     """
     logging.info("--- STEP 1: Fetching Image ---")
     conf = context['dag_run'].conf or {}
-    image_path = conf.get("image_path")
+    image_path = (conf.get("chat_inputs", {}).get("args", {}).get("image_path"))
     
     logging.info(f"Looking for file at: {image_path}")
 
@@ -37,9 +37,11 @@ def fetch_and_inspect_image(**context):
     logging.info(f"Image found. Size: {file_size} bytes.")
     
     # Return valid data for the next step
+    abs_path = os.path.abspath(image_path)
+    logging.info(f"Image found at {abs_path} – Size: {file_size} bytes")
     return {
         "status": "success",
-        "image_path": image_path,
+        "image_path": abs_path,
         "file_size": file_size
     }
 
