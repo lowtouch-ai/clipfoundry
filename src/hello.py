@@ -26,7 +26,7 @@ def random_sleep_and_outcome(task_id: str):
 
 
 with DAG(
-    dag_id="hello_test_dag",
+    dag_id="agent_dag",
     start_date=datetime(2024, 1, 1),
     schedule=None,
     catchup=False,
