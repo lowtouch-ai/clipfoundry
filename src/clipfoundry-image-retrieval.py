@@ -77,7 +77,7 @@ def generate_final_report(**context):
 with DAG(
     dag_id="image_processor_v1",
     default_args=default_args,
-    description="Verifies access to an image path passed via API trigger",
+    description="image_processor:v0.1",
     schedule=None, # Triggered externally only
     start_date=datetime(2025, 1, 1),
     catchup=False,
