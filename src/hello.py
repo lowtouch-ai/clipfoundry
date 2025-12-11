@@ -26,7 +26,7 @@ def random_sleep_and_outcome(task_id: str):
 
 
 with DAG(
-    dag_id="agent_dag",
+    dag_id="clipfoundry_dag",
     start_date=datetime(2024, 1, 1),
     schedule=None,
     catchup=False,
