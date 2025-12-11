@@ -24,13 +24,12 @@ def random_sleep_and_outcome(task_id: str):
         # continue with None
         return None
 
-
 with DAG(
     dag_id="clipfoundry_dag",
-    start_date=datetime(2025, 12, 10),
-    schedule="*/5 * * * *",
+    start_date=datetime(2024, 1, 1),
+    schedule=None,
     catchup=False,
-    tags=["test", "agent"],
+    tags=["aiops", "agent"],
 ) as dag:
 
     tasks = []
