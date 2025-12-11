@@ -81,7 +81,7 @@ with DAG(
     schedule=None, # Triggered externally only
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    tags=["lowtouch", "image-processing", "tool-test", "chat_enabled"],
+    tags=["lowtouch", "image-processing", "tool-test", "conversational"],
 ) as dag:
 
     step_1 = PythonOperator(
