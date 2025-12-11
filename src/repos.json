@@ -1,0 +1,8 @@
+{
+        "https://github.com/lowtouch-ai/clipfoundry": {
+            "path": "/appz/home/airflow/dags/clipfoundry",
+            "branch": "main",
+            "email": ["lowtouchai-demo@ecloudcontrol.com"],
+            "group": "aiops"
+        }
+}
