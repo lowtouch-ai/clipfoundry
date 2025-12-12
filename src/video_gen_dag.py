@@ -8,13 +8,17 @@ import random
 import json
 from pathlib import Path
 import sys
+import re   
 
 # Add the parent directory to Python path
 dag_dir = Path(__file__).parent
 sys.path.insert(0, str(dag_dir))
 from agent.veo import GoogleVeoVideoTool
+from models.gemini import get_gemini_response
 
 logger = logging.getLogger(__name__)
+
+GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
 
 default_args = {
     'owner': 'airflow',
@@ -23,6 +27,49 @@ default_args = {
     'retries': 1,
 }
 
+
+
+
+def build_scene_config(segments_data, aspect_ratio="16:9", images=[]):
+    """
+    Transforms AI output into downstream config.
+    NOW: Uses the 'duration' provided by the AI, with safety clamping.
+    """
+    MAX_SCENES = 10
+    
+    # Safety Limits (In case AI hallucinates a 20s or 1s duration)
+    ABSOLUTE_MIN = 5.0
+    ABSOLUTE_MAX = 10.0
+    
+    final_config = []
+    image_list = mock_list = json.loads(images) if images else []
+    
+    # 1. Truncate
+    if len(segments_data) > MAX_SCENES:
+        segments_data = segments_data[:MAX_SCENES]
+
+    for item in segments_data:
+        # Extract fields
+        text = item.get("text", "").strip()
+        ai_duration = float(item.get("duration", 6.0)) # Default to 6s if missing
+        
+        # Clean text
+        text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', text, flags=re.IGNORECASE).strip()
+        
+        # Validate/Clamp Duration (Trust but verify)
+        final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
+        
+        config_item = {
+            "image_path": random.choice(image_list) if image_list else None,
+            "prompt": text,
+            "duration": final_duration,
+            "aspect_ratio": aspect_ratio
+        }
+        # logger.info(config_item)
+        final_config.append(config_item)
+
+    return final_config
+
 dag = DAG(
     'sample_config_dag',
     default_args=default_args,
@@ -30,11 +77,12 @@ dag = DAG(
     schedule_interval=None,
     catchup=False,
     params={
-        'image_path': Param('', type='string', description='Path to the input image'),
-        'prompt': Param('', type='string', description='Text prompt for processing'),
-        'resolution': Param('', type='string', description='Output resolution (e.g., 1024x1024)'),
-        'duration': Param(0, type='integer', description='Duration in seconds'),
+        # 'image_path': Param('', type='string', description='Path to the input image'),
+        # 'prompt': Param('', type='string', description='Text prompt for processing'),
+        # 'resolution': Param('', type='string', description='Output resolution (e.g., 1024x1024)'),
+        # 'duration': Param(0, type='integer', description='Duration in seconds'),
         'aspect_ratio': Param('', type='string', description='Aspect ratio (e.g., 16:9)'),
+        "script_content":  Param('', type='string', description='Text prompt for processing'),
     },
     tags=['sample', 'config', 'xcom', 'variable'],
 )
@@ -43,19 +91,74 @@ def get_config(**context):
     """Task 1: Retrieve params and push to XCom."""
     ti = context['ti']
     config = {
-        'image_path': context['params']['image_path'],
-        'prompt': context['params']['prompt'],
-        'resolution': context['params']['resolution'],
-        'duration': context['params']['duration'],
-        'aspect_ratio': context['params']['aspect_ratio'],
-        'video_model': Variable.get('CF_VIDEO_MODEL', default_var='mock'),
+        'images': Variable.get('mock_list', default_var='mock'),
+        # 'prompt': context['params']['prompt'],
+        # 'resolution': context['params']['resolution'],
+        # 'duration': context['params']['duration'],
+        # 'aspect_ratio': context['params']['aspect_ratio'],
+        # 'video_model': Variable.get('CF_VIDEO_MODEL', default_var='mock'),
+        "status": "draft",
+        'video_meta': {
+                "aspect_ratio": "16:9",
+                "target_duration": 25
+                        },
+        "script_content":  context['params']['script_content'],
     }
     ti.xcom_push(key='config', value=config)
+    ti.xcom_push(key='images', value=Variable.get('mock_list', default_var=[]))
+    
     logger.info(f"Pushed config to XCom: {config}")
 
-
-def split_script_task(**kwargs):
+def extract_json_from_text(text):
+    """
+    Extract JSON from text, supporting both objects {} and arrays [].
+    
+    Args:
+        text: String that may contain JSON data
         
+    Returns:
+        Parsed JSON (dict or list) or None if extraction fails
+    """
+    try:
+        text = text.strip()
+        
+        # Remove markdown code blocks
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = text.strip()
+        
+        # Try direct JSON parsing first (most efficient)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to find JSON object {}
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        # Try to find JSON array []
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        logging.warning(f"Could not extract JSON from text: {text[:100]}...")
+        return None
+        
+    except Exception as e:
+        logging.error(f"JSON extraction error: {e}")
+        return None
+    
+def split_script_task(**context):
+        
+        ti = context['ti']
         # --- PROMPTS ---
         SYSTEM_PROMPT_EXTRACTOR = """
         You are a Script Extraction Specialist.
@@ -69,27 +172,33 @@ def split_script_task(**kwargs):
         SYSTEM_PROMPT_FORMATTER = """
         You are a Video Pacing Expert.
         Refine segments for TTS (Text-to-Speech).
-
+        
         CRITICAL RULES:
         1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
         2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
-        3. **NATURAL FLOW**: Group short, dramatic phrases together.
-           * BAD: ["Until now.", "An anomaly."]
-           * GOOD: ["Until now, an anomaly waits beneath the sands."]
-        4. **FORMAT**: Return a pure JSON list of strings.
+        3. **ASSIGN DURATION**: For each segment, you must assign a specific duration in seconds.
+        - **MINIMUM**: 5.0 seconds
+        - **MAXIMUM**: 8.0 seconds
+        - Logic: Use 5s for shorter punchy lines, 8s for longer descriptive lines.
+        4. **PAD IF NEEDED**: If a segment cannot be merged, slightly rewrite it to be more descriptive to increase duration.
+        * Input: "Mars Horizon."
+        * Output: "Witness the revelation of the red planet in Mars Horizon."
+        5. **NATURAL FLOW**: Group short, dramatic phrases together.
+        * BAD: ["Until now.", "An anomaly."]
+        * GOOD: ["Until now, an anomaly waits beneath the sands."]
+        6. **OUTPUT FORMAT**: Return a JSON list of objects.
+        Example:
+        [
+            { "text": "Until now, a strange ancient anomaly waits beneath.", "duration": 6.5 },
+            { "text": "Witness the revelation of the red planet.", "duration": 5.0 }
+        ]
         """
 
         # --- INPUT HANDLING ---
-        # With 'params' defined, inputs are guaranteed to be in kwargs['params'] or dag_run.conf
-        params = kwargs.get('params', {})
-        raw_data = params.get('raw_data', {})
         
-        # Fallback to direct dag_run.conf if params proxy is bypassed
-        if not raw_data:
-             dag_run = kwargs.get('dag_run')
-             if dag_run and dag_run.conf:
-                 raw_data = dag_run.conf.get('raw_data', {})
-
+        raw_data = ti.xcom_pull(key='config', task_ids='get_config')
+        images = ti.xcom_pull(key='images', task_ids='get_config')
+        logger.info
         script_content = raw_data.get('script_content')
         
         # Extract Aspect Ratio (Default to 16:9 if missing)
@@ -97,10 +206,10 @@ def split_script_task(**kwargs):
         aspect_ratio = video_meta.get('aspect_ratio', '16:9')
 
         if not script_content or script_content == "Paste your full script here...":
-            logging.error("❌ No script content provided.")
+            logger.error("❌ No script content provided.")
             return [] # Return empty list on error for consistent type
 
-        logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
+        logger.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
 
         # --- EXECUTION ---
         
@@ -108,38 +217,44 @@ def split_script_task(**kwargs):
         draft_json = get_gemini_response(
             prompt=f"Extract spoken lines from:\n{script_content}",
             system_instruction=SYSTEM_PROMPT_EXTRACTOR,
-            temperature=0.2
+            temperature=0.2,
+            api_key=GEMINI_API_KEY
         )
         
         try:
-            draft_data = json.loads(draft_json)
+            logger.info(f"Initial Draft : {draft_json}")
+            draft_data = extract_json_from_text(draft_json)
             draft_segments = draft_data.get("draft_segments", draft_data)
             if not isinstance(draft_segments, list):
-                 draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
+                draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
         except:
-             logging.error("Failed extraction step")
-             return []
+            logger.error("Failed extraction step")
+            return []
 
         if not draft_segments:
-             logging.error("No script lines found")
-             return []
+            logger.error("No script lines found")
+            return []
 
         # Step B: Pacing
         final_json = get_gemini_response(
             prompt=f"Optimize these lines for natural video flow (merge short phrases):\n{json.dumps(draft_segments)}",
             system_instruction=SYSTEM_PROMPT_FORMATTER,
-            temperature=0.3 
+            temperature=0.3, 
+            api_key=GEMINI_API_KEY
         )
-
+        logger.info(f"FINAL:: {final_json}")
         try:
-            final_data = json.loads(final_json)
+            final_data = extract_json_from_text(final_json)
             final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
-            
+            logger.info(f"Final Data {final_data} ")
             # --- FINAL STEP: BUILD CONFIG OBJECT ---
-            return build_scene_config(final_segments, aspect_ratio=aspect_ratio)
+            segments_for_processing = build_scene_config(segments_data=final_segments, aspect_ratio=aspect_ratio,images=images)
+            # logger.info(f"segments: {segments_for_processing} ")
+            ti.xcom_push(key="segments",value=segments_for_processing)
+            return segments_for_processing
 
         except Exception as e:
-            logging.error(f"Failed pacing step: {e}")
+            logger.error(f"Failed pacing step: {e}")
             return []
 
 def process_config(**context):
@@ -165,8 +280,6 @@ def process_config(**context):
         logger.info("Using Google Veo 3.0 for video generation")
         
         try:
-        
-            GEMINI_API_KEY = Variable.get('GEMINI_API_KEY', default_var='')
             # Initialize the tool
             veo_tool = GoogleVeoVideoTool(api_key=GEMINI_API_KEY)
             
@@ -226,11 +339,16 @@ task1 = PythonOperator(
     python_callable=get_config,
     dag=dag,
 )
-
 task2 = PythonOperator(
-    task_id='process_config',
-    python_callable=process_config,
+    task_id='split_script',
+    python_callable=split_script_task,
     dag=dag,
 )
+
+# task3 = PythonOperator(
+#     task_id='process_config',
+#     python_callable=process_config,
+#     dag=dag,
+# )
 
 task1 >> task2
