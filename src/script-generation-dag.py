@@ -114,13 +114,13 @@ def validate_script_duration(**kwargs):
     word_count = len(script_text.split())
     est_seconds = (word_count / AVG_WPM) * 60
     
-    logging.info(f"Target: {target_duration}s | Actual: {est_seconds:.1f}s | Words: {word_count}")
+    logging.info(f"Target: {target_duration}s | Actual: {est_seconds:.1f}s")
 
     # 2. Validation Logic (Tolerance +15%)
     limit = target_duration * 1.15
     
     if est_seconds > limit:
-        logging.warning(f"Script too long ({est_seconds:.1f}s > {limit:.1f}s). Triggering Rewrite...")
+        logging.warning(f"Script too long ({est_seconds:.1f}s). rewriting...")
         
         api_key = Variable.get("GOOGLE_API_KEY", default_var=None)
         client = None
@@ -129,9 +129,12 @@ def validate_script_duration(**kwargs):
                 client = genai.Client(api_key=api_key)
                 
                 repair_prompt = (
-                    f"The following script is too long. It takes {int(est_seconds)}s to read, but the target is {target_duration}s. "
-                    f"Rewrite it to be more concise without losing the core message.\n\n"
-                    f"Script: {script_text}"
+                    f"The following video script is too long ({int(est_seconds)}s). "
+                    f"The target is exactly {target_duration}s.\n"
+                    f"Rewrite the script to be tighter and more impactful.\n"
+                    f"CRITICAL: Return ONLY the raw script text. "
+                    f"Do NOT include explanations, 'Here is the script', or markdown formatting.\n\n"
+                    f"ORIGINAL SCRIPT:\n{script_text}"
                 )
                 
                 resp = client.models.generate_content(
@@ -140,11 +143,14 @@ def validate_script_duration(**kwargs):
                     contents=repair_prompt
                 )
                 
-                # Update with the shortened script
-                data['script_content'] = resp.text
+                # Clean any accidental leading/trailing quotes or whitespace
+                clean_new_script = resp.text.strip().strip('"')
                 
-                # Recalculate for metadata
-                new_word_count = len(data['script_content'].split())
+                # Update the data
+                data['script_content'] = clean_new_script
+                
+                # Recalculate duration for correct metadata
+                new_word_count = len(clean_new_script.split())
                 est_seconds = (new_word_count / AVG_WPM) * 60
                 logging.info(f"Repaired Duration: {est_seconds:.1f}s")
                 
