@@ -12,7 +12,7 @@ import sys
 # Add the parent directory to Python path
 dag_dir = Path(__file__).parent
 sys.path.insert(0, str(dag_dir))
-from video.video_gen import GoogleVeoVideoTool
+from agent.veo import GoogleVeoVideoTool
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,95 @@ def get_config(**context):
     ti.xcom_push(key='config', value=config)
     logger.info(f"Pushed config to XCom: {config}")
 
+
+def split_script_task(**kwargs):
+        
+        # --- PROMPTS ---
+        SYSTEM_PROMPT_EXTRACTOR = """
+        You are a Script Extraction Specialist.
+        Your input includes conversation, sound effects, script lines, and reasoning.
+        TASK:
+        - Extract ONLY the spoken words (Narration/Dialog).
+        - IGNORE "Reasoning for changes", sound effects, and labels.
+        - Return JSON: { "draft_segments": ["line 1", "line 2"] }
+        """
+
+        SYSTEM_PROMPT_FORMATTER = """
+        You are a Video Pacing Expert.
+        Refine segments for TTS (Text-to-Speech).
+
+        CRITICAL RULES:
+        1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
+        2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
+        3. **NATURAL FLOW**: Group short, dramatic phrases together.
+           * BAD: ["Until now.", "An anomaly."]
+           * GOOD: ["Until now, an anomaly waits beneath the sands."]
+        4. **FORMAT**: Return a pure JSON list of strings.
+        """
+
+        # --- INPUT HANDLING ---
+        # With 'params' defined, inputs are guaranteed to be in kwargs['params'] or dag_run.conf
+        params = kwargs.get('params', {})
+        raw_data = params.get('raw_data', {})
+        
+        # Fallback to direct dag_run.conf if params proxy is bypassed
+        if not raw_data:
+             dag_run = kwargs.get('dag_run')
+             if dag_run and dag_run.conf:
+                 raw_data = dag_run.conf.get('raw_data', {})
+
+        script_content = raw_data.get('script_content')
+        
+        # Extract Aspect Ratio (Default to 16:9 if missing)
+        video_meta = raw_data.get('video_meta', {})
+        aspect_ratio = video_meta.get('aspect_ratio', '16:9')
+
+        if not script_content or script_content == "Paste your full script here...":
+            logging.error("❌ No script content provided.")
+            return [] # Return empty list on error for consistent type
+
+        logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
+
+        # --- EXECUTION ---
+        
+        # Step A: Clean Extraction
+        draft_json = get_gemini_response(
+            prompt=f"Extract spoken lines from:\n{script_content}",
+            system_instruction=SYSTEM_PROMPT_EXTRACTOR,
+            temperature=0.2
+        )
+        
+        try:
+            draft_data = json.loads(draft_json)
+            draft_segments = draft_data.get("draft_segments", draft_data)
+            if not isinstance(draft_segments, list):
+                 draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
+        except:
+             logging.error("Failed extraction step")
+             return []
+
+        if not draft_segments:
+             logging.error("No script lines found")
+             return []
+
+        # Step B: Pacing
+        final_json = get_gemini_response(
+            prompt=f"Optimize these lines for natural video flow (merge short phrases):\n{json.dumps(draft_segments)}",
+            system_instruction=SYSTEM_PROMPT_FORMATTER,
+            temperature=0.3 
+        )
+
+        try:
+            final_data = json.loads(final_json)
+            final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
+            
+            # --- FINAL STEP: BUILD CONFIG OBJECT ---
+            return build_scene_config(final_segments, aspect_ratio=aspect_ratio)
+
+        except Exception as e:
+            logging.error(f"Failed pacing step: {e}")
+            return []
+
 def process_config(**context):
     """Task 2: Pull config from XCom and process (sample action)."""
     ti = context['ti']
@@ -84,7 +173,7 @@ def process_config(**context):
             # Extract parameters from config
             image_path = config.get('image_path', 'test_scripts/image.png')
             text = config.get('prompt', 'Hello! This is a generated video.')
-            aspect_ratio = config.get('aspect_ratio', '9:16')
+            aspect_ratio = config.get('aspect_ratio', '16:9')
             duration_seconds = config.get('duration_seconds', 6)
             output_dir=Variable.get('OUTPUT_DIR', default_var='/appz/home/airflow/dags')
             logger.info(f"Generating video with params: image={image_path}, text={text[:50]}...")
