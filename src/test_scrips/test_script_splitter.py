@@ -1,109 +1,190 @@
 import json
-from typing import List, Dict, Any
 import logging
+import re
+import os
+import google.generativeai as genai
+from typing import List, Dict, Any
 
-# ========================= MOCKED LLM INTERFACE =========================
+# ==============================================================================
+# 1. REFINED UTILITY: GEMINI CLIENT
+# ==============================================================================
 
-def get_gemini_response(input_text: str, system_prompt: str, user_prompt: str) -> str:
+# TODO: Ensure this env var is set in your Airflow setup
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", "YOUR_ACTUAL_API_KEY_HERE")
+GEMINI_MODEL = "gemini-2.5-pro"  # Use Variable.get() in actual DAG
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+def get_gemini_response(
+    prompt: str,
+    system_instruction: str = None,
+    conversation_history=None,
+    temperature: float = 0.7
+) -> str:
     """
-    Simulates a call to the Gemini API.
-    Returns a JSON string representing the list of script segments.
-    """
-    logging.info("🤖 CALLING GEMINI API (MOCKED)...")
+    Call Google Gemini model with a specific system instruction.
     
-    # SCENARIO 1: EMPTY SCRIPT
-    if not input_text or not input_text.strip():
-        return "[]"
-
-    # SCENARIO 2: LONG SCRIPT (Over 10 segments to test truncation)
-    if "LONG_SCRIPT_TEST" in input_text:
-        # Simulating 12 segments
-        segments = [f"Scene {i}: This is a long segment explanation." for i in range(1, 13)]
-        return json.dumps(segments)
-
-    # SCENARIO 3: STANDARD SCRIPT (Normal use case)
-    # Simulating a response based on the "AI Agent" summary task
-    standard_segments = [
-        "AI Agents are not just chatbots. They actually do the work.",
-        "They connect to your apps and automate tasks securely onsite.",
-        "Lowtouch.ai makes this easy. No code, just results, privately."
-    ]
-    return json.dumps(standard_segments)
-
-# ========================= SCENE SPLITTER LOGIC =========================
-
-def split_script_task(script_text: str) -> Dict[str, Any]:
+    Args:
+        prompt: The user input/query.
+        system_instruction: The system prompt to guide behavior/persona.
+        conversation_history: List of dicts with {"prompt": ..., "response": ...}
+        temperature: Creativity level.
     """
-    Parses a raw script into 8-second video segments using an LLM.
-    
-    Constraints:
-    - Max 10 scenes (Truncates with warning if exceeded).
-    - Rejects empty scripts.
-    - Each segment target duration: ~8 seconds (enforced via Prompt Engineering).
-    """
-    logging.info("🎬 STARTING TASK: Script Splitting")
-
-    # 1. Validation: Empty Script
-    if not script_text or not script_text.strip():
-        error_msg = "❌ Error: Input script is empty. Cannot generate video segments."
-        logging.error(error_msg)
-        return {"status": "error", "message": error_msg, "segments": []}
-
-    # 2. Construct Prompts
-    # We instruct the LLM to split based on natural pauses that fit an 8-second speaking window.
-    # Approx 12-15 words per segment for a slow, clear pace.
-    system_prompt = (
-        "You are an expert video scriptwriter. Your task is to split the input text into "
-        "distinct video scenes. \n"
-        "RULES:\n"
-        "1. Each scene must be spoken in approximately 8 seconds (roughly 10-15 words).\n"
-        "2. Do not change the meaning, but you may slightly edit for flow.\n"
-        "3. Return ONLY a valid JSON list of strings. Example: [\"Segment 1 text\", \"Segment 2 text\"]"
-    )
-    
-    user_prompt = f"Split this script: {script_text}"
-
-    # 3. Call LLM
     try:
-        response_str = get_gemini_response(script_text, system_prompt, user_prompt)
-        segments = json.loads(response_str)
-    except json.JSONDecodeError:
-        logging.error("Failed to parse LLM response.")
-        return {"status": "error", "message": "LLM output formatting failed", "segments": []}
+        model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_instruction)
 
-    # 4. Validation: Too Long (Max 10 scenes)
+        # Build chat history if provided
+        chat_history = []
+        if conversation_history:
+            for turn in conversation_history:
+                chat_history.append({"role": "user", "parts": [turn["prompt"]]})
+                chat_history.append({"role": "model", "parts": [turn["response"]]})
+
+        chat = model.start_chat(history=chat_history)
+
+        # We prefer JSON response type for stability, even if expect_json param is gone
+        # Using "application/json" ensures the model tries to output JSON if requested in prompt
+        response = chat.send_message(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json", 
+                temperature=temperature,
+            )
+        )
+
+        return response.text.strip()
+
+    except Exception as e:
+        logging.error(f"Gemini API error: {e}", exc_info=True)
+        return json.dumps({"error": f"AI request failed: {str(e)}"})
+
+
+# ==============================================================================
+# 2. SYSTEM PROMPTS (The "Solid" Logic)
+# ==============================================================================
+
+# PROMPT 1: LOGICAL SPLITTER
+# Focus: Grammar, meaning, and sentence structure.
+SYSTEM_PROMPT_SPLITTER = """
+You are an expert Script Editor. 
+Your task is to take a raw paragraph and break it down into individual thought units or sentences.
+Do NOT number them. Do NOT add labels. Just separate the ideas logically.
+Return a JSON object: { "draft_segments": ["thought 1", "thought 2"] }
+"""
+
+# PROMPT 2: FORMATTER & PACING ENFORCER
+# Focus: Timing (8s), word count (15 words), and CLEANING (No "Scene 1").
+SYSTEM_PROMPT_FORMATTER = """
+You are a Video Production Assistant.
+Your task is to finalize script segments for a TTS (Text-to-Speech) engine.
+
+STRICT CONSTRAINTS:
+1. **NO LABELS**: Never include "Scene 1", "Narrator:", or "Visual:". Return ONLY the spoken words.
+2. **TIMING**: Each string must be read in approx 8 seconds (Max 15 words).
+3. **SPLITTING**: If a segment from the draft is too long, split it into two.
+4. **OUTPUT**: Return a pure JSON list of strings.
+   Example: ["First sentence of audio.", "Second sentence of audio."]
+"""
+
+
+# ==============================================================================
+# 3. TASK LOGIC
+# ==============================================================================
+
+def validate_and_truncate(segments: List[str]) -> Dict[str, Any]:
     MAX_SCENES = 10
-    warning = None
+    MAX_WORDS = 15
+    warnings = []
     
+    # 1. Truncate
     if len(segments) > MAX_SCENES:
-        original_count = len(segments)
+        original = len(segments)
         segments = segments[:MAX_SCENES]
-        warning = f"⚠️ Warning: Script was too long ({original_count} scenes). Truncated to {MAX_SCENES} max."
-        logging.warning(warning)
-    
-    # 5. Success Return
-    logging.info(f"✅ Successfully split script into {len(segments)} segments.")
+        warnings.append(f"Truncated from {original} to {MAX_SCENES} scenes.")
+        
+    # 2. Validate Content
+    clean_segments = []
+    for i, seg in enumerate(segments):
+        # Final safety cleanup (removing accidentally leaked "Scene:" text)
+        clean_seg = re.sub(r'^(Scene\s*\d+|Step\s*\d+|Narrator):?\s*', '', seg, flags=re.IGNORECASE).strip()
+        
+        # Word count check
+        wc = len(clean_seg.split())
+        if wc > MAX_WORDS:
+            warnings.append(f"Segment {i+1} is {wc} words (Rec: <{MAX_WORDS}). Audio may be fast.")
+            
+        clean_segments.append(clean_seg)
+
     return {
         "status": "success",
-        "warning": warning,
-        "segments": segments,
-        "segment_count": len(segments)
+        "segments": clean_segments,
+        "segment_count": len(clean_segments),
+        "warnings": warnings
     }
 
-# ========================= TEST RUNNER =========================
+def split_script_task(script_text: str) -> Dict[str, Any]:
+    if not script_text or not script_text.strip():
+        return {"status": "error", "message": "Input is empty"}
 
+    try:
+        # --- CALL 1: ROUGH DRAFT ---
+        logging.info("🔹 Step 1: Logical Splitting...")
+        draft_json = get_gemini_response(
+            prompt=f"Split this text:\n{script_text}",
+            system_instruction=SYSTEM_PROMPT_SPLITTER,
+            temperature=0.3
+        )
+        draft_data = json.loads(draft_json)
+        draft_segments = draft_data.get("draft_segments", [])
+        
+        # --- CALL 2: FINALIZE & FORMAT ---
+        logging.info("🔹 Step 2: Enforcing 8-second pacing & cleaning...")
+        # We pass the draft segments to the second call to refine them
+        draft_str = json.dumps(draft_segments)
+        
+        final_json = get_gemini_response(
+            prompt=f"Refine these segments for 8-second video pacing:\n{draft_str}",
+            system_instruction=SYSTEM_PROMPT_FORMATTER,
+            temperature=0.1 # Low temp for strict formatting
+        )
+        
+        final_segments = json.loads(final_json)
+        
+        # Check if API returned dict wrapper instead of list
+        if isinstance(final_segments, dict):
+            final_segments = final_segments.get("segments", list(final_segments.values())[0])
+
+        return validate_and_truncate(final_segments)
+
+    except json.JSONDecodeError:
+        logging.error(f"JSON Parsing Error. Raw output: {final_json}")
+        return {"status": "error", "message": "AI failed to format JSON"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ==============================================================================
+# 4. TEST RUNNER
+# ==============================================================================
 if __name__ == "__main__":
-    print("--- TEST CASE 1: Standard Script ---")
-    input_standard = "AI Agents are not just chatbots..."
-    result_1 = split_script_task(input_standard)
-    print(json.dumps(result_1, indent=2))
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     
-    print("\n--- TEST CASE 2: Empty Script ---")
-    input_empty = ""
-    result_2 = split_script_task(input_empty)
-    print(json.dumps(result_2, indent=2))
+    if "YOUR_ACTUAL" in GEMINI_API_KEY:
+        print("❌ ERROR: Set your API Key in line 13")
+        exit(1)
+
+    print("-" * 60)
+    print("TEST: Script with Metadata (Should be cleaned)")
+    print("-" * 60)
     
-    print("\n--- TEST CASE 3: Too Long Script ---")
-    input_long = "LONG_SCRIPT_TEST content..."
-    result_3 = split_script_task(input_long)
-    print(json.dumps(result_3, indent=2))
+    # Input with artifacts that we want the AI to remove
+    dirty_input = (
+        "Scene 1: AI agents are the future. "
+        "Narrator: They connect to your database. "
+        "Scene 2: This keeps data private. "
+        "Visual: Show a lock icon. "
+        "And finally, the workflow is automated."
+    )
+    
+    result = split_script_task(dirty_input)
+    print(json.dumps(result, indent=2))
