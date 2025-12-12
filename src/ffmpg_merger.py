@@ -107,13 +107,11 @@ def merge_videos_logic(**context):
     params = context['params']
     
     # 1. Parse Inputs
-    # Handle the case where input might be a string representation of a list or a real list
     raw_paths = params.get('video_paths', [])
     if isinstance(raw_paths, str):
         try:
             video_paths = json.loads(raw_paths)
         except json.JSONDecodeError:
-            # Fallback for comma separated string
             video_paths = [p.strip() for p in raw_paths.split(',')]
     else:
         video_paths = raw_paths
@@ -123,21 +121,13 @@ def merge_videos_logic(**context):
     if not video_paths:
         raise ValueError("No video paths provided in params.")
 
-    # Validate paths exist
-    valid_paths = []
-    for p in video_paths:
-        if os.path.exists(p):
-            valid_paths.append(p)
-        else:
-            logger.warning(f"File not found, skipping: {p}")
+    valid_paths = [p for p in video_paths if os.path.exists(p)]
     
     if len(valid_paths) < 2:
         logger.info("Less than 2 valid videos. No merge needed.")
         return valid_paths[0] if valid_paths else None
 
     # Setup Workspaces
-    # If req_id is provided, output to: /appz/shared/{req_id}/output/merged_{req_id}.mp4
-    # Working dir: /appz/shared/{req_id}/temp
     base_dir = Path(f"/appz/shared/{req_id}") if req_id != 'manual_test' else Path(f"/appz/shared/mock")
     temp_dir = base_dir / "temp"
     output_dir = base_dir / "output" if req_id != 'manual_test' else base_dir / "input"
@@ -163,65 +153,62 @@ def merge_videos_logic(**context):
         logger.info(f"Clip {idx} duration: {duration}s")
 
     # 4. Build FFmpeg Filter Complex
-    # We iterate N-1 times for transitions.
-    
     inputs = []
     for clip in processed_clips:
         inputs.extend(["-i", clip])
 
     filter_parts = []
     
-    # --- Video Transitions (xfade) ---
-    # We must track the "start time" of the NEXT clip relative to the timeline.
-    # offset = current_end_time - TRANSITION_DURATION
+    # Track duration to know when to start the Fade Out
+    cumulative_duration = clip_durations[0]
     
-    cumulative_duration = 0.0
+    # === Video Transitions (xfade) ===
     current_v_label = "0:v"
     
-    # Initialize with first clip duration
-    cumulative_duration = clip_durations[0]
-
     for i in range(len(processed_clips) - 1):
         next_v_idx = i + 1
         next_v_label = f"{next_v_idx}:v"
         
-        # The offset is where the transition BEGINS.
         offset = cumulative_duration - TRANSITION_DURATION
-        
-        # Safety check: offset cannot be negative
         if offset < 0: offset = 0
         
-        # Transition type (can be randomized or fixed)
-        trans_type = "fade" 
+        # LOGIC FIX: Explicitly check if this is the LAST transition
+        is_last_transition = (i == len(processed_clips) - 2)
         
-        target_v_label = f"v{i}" if i < len(processed_clips) - 2 else "vout"
+        if is_last_transition:
+            # If it's the last transition, output to 'v_raw' so the Fade effect can grab it
+            target_v_label = "v_raw"
+        else:
+            # Otherwise, keep chaining internally (v0, v1, etc.)
+            target_v_label = f"v{i}"
         
         xfade_cmd = (
             f"[{current_v_label}][{next_v_label}]"
-            f"xfade=transition={trans_type}:duration={TRANSITION_DURATION}:offset={offset}"
+            f"xfade=transition=fade:duration={TRANSITION_DURATION}:offset={offset}"
             f"[{target_v_label}]"
         )
         filter_parts.append(xfade_cmd)
         
         current_v_label = target_v_label
         
-        # Update duration for the next loop.
-        # The new total length is: (current_timeline + next_clip_duration - overlap)
-        # Note: xfade logic uses absolute timeline offset.
-        # So we just add the non-overlapped part of the NEXT clip.
+        # Update total duration
         cumulative_duration += (clip_durations[next_v_idx] - TRANSITION_DURATION)
 
-    # --- Audio Transitions (acrossfade) ---
-    # acrossfade does NOT use offsets. It just says "fade the end of A into start of B".
-    # Since we are feeding them sequentially, we just chain them.
-    
+    # === Audio Transitions (acrossfade) ===
     current_a_label = "0:a"
     for i in range(len(processed_clips) - 1):
         next_a_idx = i + 1
         next_a_label = f"{next_a_idx}:a"
-        target_a_label = f"a{i}" if i < len(processed_clips) - 2 else "aout"
         
-        # Audio doesn't need 'offset' calc, it just overlaps ends
+        # LOGIC FIX: Explicitly check if this is the LAST transition
+        is_last_transition = (i == len(processed_clips) - 2)
+        
+        if is_last_transition:
+             # If last, output to 'a_raw'
+            target_a_label = "a_raw"
+        else:
+            target_a_label = f"a{i}"
+        
         afade_cmd = (
             f"[{current_a_label}][{next_a_label}]"
             f"acrossfade=d={TRANSITION_DURATION}:c1=tri:c2=tri"
@@ -229,6 +216,23 @@ def merge_videos_logic(**context):
         )
         filter_parts.append(afade_cmd)
         current_a_label = target_a_label
+
+    # === Final Fade Out to Black/Silence ===
+    # This masks the "glitch" at the end by fading out 1 second before the end.
+    FADE_OUT_DURATION = 1.0
+    fade_start_time = cumulative_duration - FADE_OUT_DURATION
+    
+    if fade_start_time < 0: fade_start_time = 0
+
+    # Apply fade out to Video (v_raw -> vout)
+    filter_parts.append(
+        f"[v_raw]fade=t=out:st={fade_start_time}:d={FADE_OUT_DURATION}[vout]"
+    )
+    
+    # Apply fade out to Audio (a_raw -> aout)
+    filter_parts.append(
+        f"[a_raw]afade=t=out:st={fade_start_time}:d={FADE_OUT_DURATION}[aout]"
+    )
 
     full_filter = ";".join(filter_parts)
 
@@ -244,6 +248,7 @@ def merge_videos_logic(**context):
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
+        "-shortest",  # Safety to cut streams if lengths mismatch
         str(final_output_path)
     ]
     
