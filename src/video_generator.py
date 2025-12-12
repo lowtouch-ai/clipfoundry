@@ -258,6 +258,12 @@ Return ONLY valid JSON:
   "reasoning": "how you interpreted the request",
   "action": "generate_video" | "generate_script",
 }}
+- If action is generate_video:
+    - Parse the resolution and aspect ratio from USER MESSAGE. 
+    - If the User doesnot specify any resolution or aspect ratio keep it to default as :
+        aspect_ratio:16:9
+        resoltuion:720p
+    - add both values in above returning json.
 """
 
     response = get_gemini_response(
@@ -285,7 +291,9 @@ Return ONLY valid JSON:
         "idea_description": idea_description,
         "script_quality": "none",
         "suggested_title": analysis.get("suggested_title", "Your Video"),
-        "tone": analysis.get("tone", "professional")
+        "tone": analysis.get("tone", "professional"),
+        "aspect_ratio": analysis.get("aspect_ratio", "720p"),
+        "resolution": analysis.get("resolution", "16:9")
     })
     
     logging.info(f"Forcing script generation with interpreted idea: {idea_description}")
