@@ -11,12 +11,17 @@ from datetime import datetime, timedelta
 import os
 import json
 import logging
+import shutil               # Added for file ops
+import subprocess           # Added for FFmpeg
+from pathlib import Path    # Added for path handling
+from typing import List, Dict, Any # Added for typing
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import re
 import google.generativeai as genai
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("airflow.task")
 
 default_args = {
     "owner": "video_companion_developers",
@@ -35,6 +40,15 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
 GEMINI_MODEL = Variable.get("video.companion.gemini.model", default_var="gemini-2.5-flash")
+
+# --- MOCK CONFIGURATION ---
+MOCK_VIDEO_PARTS = [
+    "/appz/home/airflow/dags/clipfoundry/src/mock_video/input/part_1.mp4",
+    "/appz/home/airflow/dags/clipfoundry/src/mock_video/input/part_2.mp4",
+    "/appz/home/airflow/dags/clipfoundry/src/mock_video/input/part_3.mp4"
+]
+TRANSITION_DURATION = 0.5
+
 CLARITY_ANALYZER_SYSTEM = """
 You are an expert Video Production QA Assistant.
 Your only job is to strictly evaluate whether a user request contains enough information to generate a high-quality talking-head AI avatar video.
@@ -53,6 +67,150 @@ Required JSON format (no deviations):
   "reasoning": "short internal note"
 }
 """
+
+# ============================================================================
+# NEW: FFmpeg Helper Functions
+# ============================================================================
+
+def get_video_metadata(file_path: str) -> Dict[str, Any]:
+    """Uses ffprobe to extract width, height, and exact duration."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,duration",
+        "-of", "json",
+        str(file_path)
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        stream = data['streams'][0]
+        return {
+            'width': int(stream['width']),
+            'height': int(stream['height']),
+            'duration': float(stream.get('duration', 0))
+        }
+    except Exception as e:
+        logger.error(f"Failed to probe {file_path}: {e}")
+        raise
+
+def prepare_segment(source_path: str, output_path: str, target_width: int, target_height: int) -> float:
+    """Standardizes resolution and audio sample rate."""
+    vf_filter = (
+        f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
+    )
+    
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", source_path,
+        "-vf", vf_filter,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-r", "30",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        output_path
+    ]
+    
+    logger.info(f"Standardizing segment: {source_path} -> {output_path}")
+    subprocess.run(cmd, check=True, capture_output=True)
+    return get_video_metadata(output_path)['duration']
+
+def execute_merge_logic(video_paths: List[str], request_id: str, output_dir: str) -> str:
+    """Executes the FFmpeg merge with transitions and fade-out fix."""
+    
+    # Setup Temp Workspace
+    base_dir = Path(output_dir)
+    temp_dir = base_dir / f"temp_{request_id}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Determine Target Resolution from Clip 1
+    meta_first = get_video_metadata(video_paths[0])
+    target_w = meta_first['width']
+    target_h = meta_first['height']
+    
+    # 2. Process Segments
+    processed_clips = []
+    clip_durations = []
+    
+    for idx, raw_clip in enumerate(video_paths):
+        out_name = temp_dir / f"norm_{idx:03d}.mp4"
+        duration = prepare_segment(str(raw_clip), str(out_name), target_w, target_h)
+        processed_clips.append(str(out_name))
+        clip_durations.append(duration)
+
+    # 3. Build FFmpeg Filter
+    inputs = []
+    for clip in processed_clips:
+        inputs.extend(["-i", clip])
+
+    filter_parts = []
+    cumulative_duration = clip_durations[0]
+    
+    current_v_label = "0:v"
+    current_a_label = "0:a"
+    
+    for i in range(len(processed_clips) - 1):
+        next_idx = i + 1
+        
+        offset = cumulative_duration - TRANSITION_DURATION
+        if offset < 0: offset = 0
+        
+        is_last_transition = (i == len(processed_clips) - 2)
+        target_v = "v_raw" if is_last_transition else f"v{i}"
+        target_a = "a_raw" if is_last_transition else f"a{i}"
+        
+        filter_parts.append(
+            f"[{current_v_label}][{next_idx}:v]"
+            f"xfade=transition=fade:duration={TRANSITION_DURATION}:offset={offset}"
+            f"[{target_v}]"
+        )
+        
+        filter_parts.append(
+            f"[{current_a_label}][{next_idx}:a]"
+            f"acrossfade=d={TRANSITION_DURATION}:c1=tri:c2=tri"
+            f"[{target_a}]"
+        )
+        
+        current_v_label = target_v
+        current_a_label = target_a
+        cumulative_duration += (clip_durations[next_idx] - TRANSITION_DURATION)
+
+    # 4. Final Fade Out (The Fix)
+    FADE_OUT_DURATION = 1.0
+    fade_start = cumulative_duration - FADE_OUT_DURATION
+    if fade_start < 0: fade_start = 0
+    
+    filter_parts.append(f"[v_raw]fade=t=out:st={fade_start}:d={FADE_OUT_DURATION}[vout]")
+    filter_parts.append(f"[a_raw]afade=t=out:st={fade_start}:d={FADE_OUT_DURATION}[aout]")
+
+    full_filter = ";".join(filter_parts)
+
+    # 5. Execute Merge
+    final_filename = f"merged_{request_id}_{int(datetime.now().timestamp())}.mp4"
+    final_path = base_dir / final_filename
+    
+    merge_cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", full_filter,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        "-shortest",
+        str(final_path)
+    ]
+    
+    logger.info(f"Running merge command: {' '.join(merge_cmd)}")
+    subprocess.run(merge_cmd, capture_output=True, check=True)
+    
+    # Cleanup
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    return str(final_path)
+
+# ============================================================================
+# Existing Functions
+# ============================================================================
 
 def authenticate_gmail():
     """Authenticate Gmail API."""
@@ -525,6 +683,7 @@ def generate_script(**kwargs):
     """Generate video script based on user's idea."""
     ti = kwargs['ti']
     
+        
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
@@ -677,52 +836,82 @@ Return ONLY the script text, no additional formatting or explanations.
     
     logging.info("Sent script confirmation email")
 
+# ============================================================================
+# MODIFIED: generate_video (Outputs List of Files)
+# ============================================================================
+
 def generate_video(**kwargs):
-    """Generate video from images and script."""
+    """
+    Simulates generating video parts.
+    Outputs a LIST of file paths to XCom for the merger task.
+    """
+    ti = kwargs['ti']
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input") or "mock_test"
+    
+    logging.info(f"Generating video parts for thread {thread_id}")
+    
+    # In Mock mode, we verify the 3 mock parts exist
+    valid_parts = [p for p in MOCK_VIDEO_PARTS if os.path.exists(p)]
+    
+    if len(valid_parts) < 2:
+        error_msg = f"Insufficient mock parts found. Needed 3, found {len(valid_parts)}."
+        logging.error(error_msg)
+        # We push success=False so downstream knows to fail (or handle error)
+        ti.xcom_push(key="video_generation_success", value=False) 
+        ti.xcom_push(key="video_generation_error", value=error_msg)
+        return
+
+    logging.info(f"Successfully located {len(valid_parts)} video parts.")
+    
+    # Push the LIST of parts to XCom
+    ti.xcom_push(key="generated_video_parts", value=valid_parts)
+    ti.xcom_push(key="video_generation_success", value=True)
+
+# ============================================================================
+# NEW TASK: merge_videos (Takes List -> Merges -> Outputs Single File)
+# ============================================================================
+
+def merge_videos(**kwargs):
+    """
+    Pulls list of videos from generate_video, merges them, and outputs final path.
+    """
     ti = kwargs['ti']
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    images = ti.xcom_pull(key="images", task_ids="validate_input")
-    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    
-    prompt = email_data.get("content", "").strip()
-    
-    logging.info(f"Generating video for thread {thread_id}")
-    
-    # Get image paths from thread directory
-    thread_image_dir = os.path.join(SHARED_IMAGES_DIR, thread_id)
-    image_paths = [img["path"] for img in images if os.path.exists(img["path"])]
-    
-    if not image_paths:
-        logging.error("No valid image paths found")
-        ti.xcom_push(key="video_generation_error", value="No images available")
+    # Check if generation was successful
+    gen_success = ti.xcom_pull(key="video_generation_success", task_ids="generate_video")
+    if not gen_success:
+        logging.warning("Skipping merge because generation failed.")
+        ti.xcom_push(key="video_generation_success", value=False) # Propagate failure
         return
-    
-    logging.info(f"Using {len(image_paths)} images: {image_paths}")
-    
-    # Create video output directory
-    os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
-    video_filename = f"video_{thread_id}_{int(datetime.now().timestamp())}.mp4"
-    video_path = os.path.join(VIDEO_OUTPUT_DIR, video_filename)
-    
+
+    # Pull the list of parts
+    video_parts = ti.xcom_pull(key="generated_video_parts", task_ids="generate_video")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input") or "mock_test"
+
     try:
-        # TODO: Implement actual video generation logic here
-        # This is a placeholder for the video generation process
-        # You would integrate with your video generation service/API
+        os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+        logging.info("Starting Merge Process...")
         
-        # Placeholder: Create a dummy video file for testing
-        with open(video_path, "wb") as f:
-            f.write(b"PLACEHOLDER_VIDEO_DATA")
+        merged_path = execute_merge_logic(
+            video_paths=video_parts,
+            request_id=thread_id,
+            output_dir=VIDEO_OUTPUT_DIR
+        )
         
-        logging.info(f"Video generated: {video_path}")
-        ti.xcom_push(key="generated_video_path", value=video_path)
+        logging.info(f"Merge Complete: {merged_path}")
+        
+        # Push final single video path for email task
+        ti.xcom_push(key="generated_video_path", value=merged_path)
         ti.xcom_push(key="video_generation_success", value=True)
         
     except Exception as e:
-        logging.error(f"Video generation failed: {e}", exc_info=True)
-        ti.xcom_push(key="video_generation_error", value=str(e))
+        logging.error(f"Merge failed: {e}", exc_info=True)
         ti.xcom_push(key="video_generation_success", value=False)
+        ti.xcom_push(key="video_generation_error", value=str(e))
+
+# ============================================================================
+# MODIFIED: send_video_email (Reads from merge_videos task)
+# ============================================================================
 
 def send_video_email(**kwargs):
     """Send generated video to user."""
@@ -974,6 +1163,8 @@ def send_error_email(**kwargs):
     
     logging.info("Sent generic error email")
 
+# ================= DAG DEFINITION =================
+
 readme_content = """
 # Video Companion Processor DAG
 
@@ -999,7 +1190,33 @@ with DAG(
     schedule_interval=None,
     catchup=False,
     doc_md=readme_content,
-    tags=["video", "companion", "processor"]
+    tags=["video", "companion", "processor"],
+    params={
+        "email_data": {
+            # Providing a clear script ensures validation passes and jumps straight to generation
+            "content": """
+            Please create a video using the attached images. I have the script ready:
+            
+            "Welcome to Lowtouch AI. This is a test of the new video merging pipeline. 
+            We are verifying that the three video clips merge seamlessly with cross-fade transitions 
+            and that the audio levels are consistent. System status is nominal."
+            """,
+            "headers": {
+                # A valid email format is required to avoid "Recipient address required" error
+                "From": "manual_tester@lowtouch.ai", 
+                "Subject": "Manual Test: Video Merge Pipeline",
+                "Message-ID": "manual_test_id_001"
+            }
+        },
+        "images": [
+            # This dummy entry is REQUIRED so validate_input doesn't fail
+            # The actual generation task will ignore this path and use your MOCK_VIDEO_PARTS list
+            {"path": "/appz/shared_images/mock_placeholder.jpg"} 
+        ],
+        "chat_history": [],
+        "thread_id": "manual_merge_test_run",
+        "message_id": "manual_msg_001"
+    }
 ) as dag:
 
     validate_input_task = BranchPythonOperator(
@@ -1038,6 +1255,13 @@ with DAG(
         provide_context=True
     )
 
+    # NEW TASK
+    merge_videos_task = PythonOperator(
+        task_id="merge_videos",
+        python_callable=merge_videos,
+        provide_context=True
+    )
+
     send_video_email_task = PythonOperator(
         task_id="send_video_email",
         python_callable=send_video_email,
@@ -1066,7 +1290,9 @@ with DAG(
     ]
     
     generate_script_task >> end_task
-    generate_video_task >> send_video_email_task >> end_task
+    
+    # UPDATED PIPELINE: Generate -> Merge -> Email
+    generate_video_task >> merge_videos_task >> send_video_email_task >> end_task
     
     send_missing_elements_task >> end_task
     send_unclear_idea_task >> end_task
