@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import os
+import math
 import pendulum
 from airflow import DAG
 from airflow.decorators import task
@@ -38,30 +39,55 @@ def get_gemini_response(prompt: str, system_instruction: str = None, temperature
         logging.error(f"Gemini API error: {e}", exc_info=True)
         return json.dumps({"error": f"AI request failed: {str(e)}"})
 
-def validate_and_truncate(segments):
-    """Business Logic: Max 10 scenes, 15 words/sec limit."""
+def build_scene_config(segments, aspect_ratio="16:9"):
+    """
+    Transforms raw text segments into the configuration objects required by downstream tasks.
+    
+    Output Structure:
+    [
+      {
+        'image_path': None,  # Workaround: Null for now
+        'prompt': "Segment text...",
+        'duration': 5.5,     # Calculated
+        'aspect_ratio': "16:9"
+      },
+      ...
+    ]
+    """
     MAX_SCENES = 10
-    MAX_WORDS = 15
-    warnings = []
-
+    # Constraints for valid duration
+    MIN_DURATION = 3.0 
+    MAX_DURATION = 8.0 
+    WORDS_PER_SEC = 2.0 # Slower, cinematic pacing
+    
+    final_config = []
+    
+    # 1. Truncate strictly
     if len(segments) > MAX_SCENES:
+        logging.warning(f"⚠️ Input had {len(segments)} segments. Truncating to {MAX_SCENES}.")
         segments = segments[:MAX_SCENES]
-        warnings.append(f"Truncated to {MAX_SCENES} scenes.")
 
-    clean_segments = []
     for i, seg in enumerate(segments):
-        seg = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', seg, flags=re.IGNORECASE).strip()
-        wc = len(seg.split())
-        if wc > MAX_WORDS:
-            warnings.append(f"Segment {i+1} is {wc} words (Limit {MAX_WORDS}). Audio may be rushed.")
-        clean_segments.append(seg)
+        # Clean text
+        text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', seg, flags=re.IGNORECASE).strip()
+        
+        # Calculate Duration
+        word_count = len(text.split())
+        calc_duration = round(word_count / WORDS_PER_SEC, 1)
+        
+        # Clamp Duration (Keep it between 3s and 8s)
+        duration = max(MIN_DURATION, min(calc_duration, MAX_DURATION))
+        
+        # Build Item
+        item = {
+            "image_path": None,  # <--- Workaround as requested
+            "prompt": text,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio
+        }
+        final_config.append(item)
 
-    return {
-        "status": "success",
-        "segments": clean_segments,
-        "segment_count": len(clean_segments),
-        "warnings": warnings
-    }
+    return final_config
 
 # ==============================================================================
 # DAG DEFINITION
@@ -73,35 +99,32 @@ default_args = {
     'retries': 0,
 }
 
-# --- DEFINE DEFAULT PARAMS FOR UI ---
-# This ensures the Text Box / JSON Editor appears when you click Trigger
+# Default UI input structure
 default_json_structure = {
     "script_content": "Paste your full script here...",
     "status": "draft",
-    "video_meta": {"target_duration": 25}
+    "video_meta": {
+        "target_duration": 25,
+        "aspect_ratio": "16:9" # Added aspect ratio field
+    }
 }
 
 with DAG(
     dag_id='video_script_splitter_integrated',
     default_args=default_args,
-    description='Parses raw script input into 8-second video segments',
+    description='Parses raw script input into downstream video configuration',
     schedule_interval=None,
     start_date=pendulum.today('UTC'),
     catchup=False,
     tags=['video', 'ai'],
-    # 🔴 THIS PARAMS BLOCK FORCES THE CONFIG WINDOW TO OPEN 🔴
     params={
         "raw_data": Param(
             default_json_structure, 
             type="object", 
             title="Raw Data JSON",
-            description="The input object containing 'script_content'"
+            description="The input object containing 'script_content' and 'video_meta'"
         ),
-        "markdown_output": Param(
-            "", 
-            type=["string", "null"],
-            title="Markdown Output (Optional)"
-        )
+        "markdown_output": Param("", type=["string", "null"])
     }
 ) as dag:
 
@@ -143,15 +166,20 @@ with DAG(
                  raw_data = dag_run.conf.get('raw_data', {})
 
         script_content = raw_data.get('script_content')
+        
+        # Extract Aspect Ratio (Default to 16:9 if missing)
+        video_meta = raw_data.get('video_meta', {})
+        aspect_ratio = video_meta.get('aspect_ratio', '16:9')
 
         if not script_content or script_content == "Paste your full script here...":
             logging.error("❌ No script content provided.")
-            return {"status": "error", "message": "Please provide valid script_content in JSON."}
+            return [] # Return empty list on error for consistent type
 
-        logging.info(f"📥 Processing Script ({len(script_content)} chars)")
+        logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
 
         # --- EXECUTION ---
-        # Step A: Clean
+        
+        # Step A: Clean Extraction
         draft_json = get_gemini_response(
             prompt=f"Extract spoken lines from:\n{script_content}",
             system_instruction=SYSTEM_PROMPT_EXTRACTOR,
@@ -164,23 +192,29 @@ with DAG(
             if not isinstance(draft_segments, list):
                  draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
         except:
-            return {"status": "error", "message": "Failed extraction step"}
+             logging.error("Failed extraction step")
+             return []
 
         if not draft_segments:
-             return {"status": "error", "message": "No script lines found."}
+             logging.error("No script lines found")
+             return []
 
-        # Step B: Pace
+        # Step B: Pacing
         final_json = get_gemini_response(
-            prompt=f"Refine for 8s pacing:\n{json.dumps(draft_segments)}",
+            prompt=f"Optimize these lines for natural video flow (merge short phrases):\n{json.dumps(draft_segments)}",
             system_instruction=SYSTEM_PROMPT_FORMATTER,
-            temperature=0.1
+            temperature=0.3 
         )
 
         try:
             final_data = json.loads(final_json)
             final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
-            return validate_and_truncate(final_segments)
-        except:
-            return {"status": "error", "message": "Failed pacing step"}
+            
+            # --- FINAL STEP: BUILD CONFIG OBJECT ---
+            return build_scene_config(final_segments, aspect_ratio=aspect_ratio)
+
+        except Exception as e:
+            logging.error(f"Failed pacing step: {e}")
+            return []
 
     split_script_task()
