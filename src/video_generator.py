@@ -560,7 +560,6 @@ Return ONLY the script text, no additional formatting or explanations.
         prompt=script_prompt,
         conversation_history=conversation_history_for_ai
     )
-    logging
     
     if not generated_script or "error" in generated_script.lower():
         logging.error("Script generation failed")
