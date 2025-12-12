@@ -13,8 +13,8 @@ import json
 import logging
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from ollama import Client
 import re
+import google.generativeai as genai
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,9 +28,31 @@ default_args = {
 
 VIDEO_COMPANION_FROM_ADDRESS = Variable.get("video.companion.from.address")
 GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
-OLLAMA_HOST = Variable.get("video.companion.ollama.host", "http://agentomatic:8000")
 SHARED_IMAGES_DIR = "/appz/shared_images"
 VIDEO_OUTPUT_DIR = "/appz/video_outputs"
+GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
+GEMINI_MODEL = Variable.get("video.companion.gemini.model", default_var="gemini-2.5-flash")
+CLARITY_ANALYZER_SYSTEM = """
+You are an expert Video Production QA Assistant.
+Your only job is to strictly evaluate whether a user request contains enough information to generate a high-quality talking-head AI avatar video.
+
+Rules:
+- "has_clear_idea" = true only if the user clearly states the video type and goal (e.g., "product intro", "testimonial", "tutorial").
+- "has_script" = true only if full spoken dialogue is provided.
+- Always output valid JSON only. Never add explanations, markdown, or extra text.
+
+Required JSON format (no deviations):
+{
+  "has_clear_idea": true|false,
+  "has_script": true|false,
+  "idea_description": "one-sentence summary or 'unclear'",
+  "script_quality": "none|partial|complete",
+  "reasoning": "short internal note"
+}
+"""
 
 def authenticate_gmail():
     """Authenticate Gmail API."""
@@ -44,38 +66,57 @@ def authenticate_gmail():
         logging.error(f"Gmail authentication failed: {e}")
         return None
 
-def get_ai_response(prompt, conversation_history=None, expect_json=False):
-    """Get AI response from Ollama."""
+def get_gemini_response(
+    prompt: str,
+    system_instruction: str | None = None,
+    conversation_history: list[dict[str, str]] | None = None,
+    temperature: float = 0.7,
+) -> str:
+    """
+    Call Google Gemini model with optional system instruction and chat history.
+
+    Args:
+        prompt: The current user message/query.
+        system_instruction: Optional system prompt to guide model behavior/persona.
+        conversation_history: List of previous turns → [{"prompt": ..., "response": ...}]
+        temperature: Creativity level (0.0 – 1.0).
+
+    Returns:
+        Model response as string.
+    """
     try:
-        client = Client(host=OLLAMA_HOST, headers={'x-ltai-client': 'video-companion'})
-        messages = []
+        # Always request JSON mime type for more reliable structured output
+        # (especially useful when system_instruction asks for JSON)
+        generation_config = genai.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=temperature,
+        )
 
-        if expect_json:
-            messages.append({
-                "role": "system",
-                "content": "You are a JSON-only API. Always respond with valid JSON objects. Never include explanatory text, HTML, or markdown formatting."
-            })
+        # Create model with system instruction
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            system_instruction=system_instruction,
+            generation_config=generation_config,
+        )
 
+        # Build chat history in Gemini's expected format
+        chat_history = []
         if conversation_history:
-            for item in conversation_history:
-                messages.append({"role": "user", "content": item["prompt"]})
-                messages.append({"role": "assistant", "content": item["response"]})
-        
-        messages.append({"role": "user", "content": prompt})
-        
-        response = client.chat(model='video-companion:latest', messages=messages, stream=False)
-        ai_content = response.message.content
-        
-        if expect_json:
-            ai_content = re.sub(r'```(?:json)?\n?|```', '', ai_content)
-        
-        return ai_content.strip()
+            for turn in conversation_history:
+                chat_history.append({"role": "user", "parts": [turn["prompt"]]})
+                chat_history.append({"role": "model", "parts": [turn["response"]]})
+
+        # Start chat and send message
+        chat = model.start_chat(history=chat_history)
+        response = chat.send_message(prompt)
+
+        return response.text.strip()
+
     except Exception as e:
-        logging.error(f"AI response error: {e}")
-        if expect_json:
-            return f'{{"error": "AI request failed: {str(e)}"}}'
-        else:
-            return f"Error: {str(e)}"
+        logging.error(f"Gemini API error: {e}", exc_info=True)
+        error_msg = f"AI request failed: {str(e)}"
+        # Return a JSON string on error for consistency with JSON mime type
+        return json.dumps({"error": error_msg})
 
 def extract_json_from_text(text):
     """Extract JSON from text."""
@@ -183,15 +224,13 @@ def validate_input(**kwargs):
     return "validate_prompt_clarity"
 
 def validate_prompt_clarity(**kwargs):
-    """Validate if prompt has clear idea and script."""
     ti = kwargs['ti']
-    
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
-    
+    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     prompt = email_data.get("content", "").strip()
     
-    # Build conversation history for AI
     conversation_history_for_ai = []
     for i in range(0, len(chat_history), 2):
         if i + 1 < len(chat_history):
@@ -203,61 +242,61 @@ def validate_prompt_clarity(**kwargs):
                     "response": assistant_msg["content"]
                 })
     
-    analysis_prompt = f"""You are a video generation assistant. Analyze this user request:
+    # Still do analysis to extract useful context (topic, tone, etc.)
+    analysis_prompt = f"""
+Analyze this user message and extract the best possible video idea:
 
-USER REQUEST: "{prompt}"
-
-Analyze the request and determine:
-1. Does it have a CLEAR IDEA/GOAL for what kind of video to generate? (e.g., talking head, product demo, tutorial, story)
-2. Does it have a DETAILED SCRIPT or dialogue?
+USER MESSAGE: "{prompt}"
 
 Return ONLY valid JSON:
 {{
-    "has_clear_idea": true/false,
-    "has_script": true/false,
-    "idea_description": "brief description of the idea if present, or 'unclear' if missing",
-    "script_quality": "none|partial|complete",
-    "reasoning": "brief explanation"
+  "has_clear_idea": true|false,
+  "idea_description": "best possible one-sentence summary of what video to make",
+  "suggested_title": "short catchy title for the video",
+  "target_audience": "who this video is for (guess if needed)",
+  "tone": "professional|friendly|energetic|calm|motivational|etc",
+  "reasoning": "how you interpreted the request",
+  "action": "generate_video" | "generate_script",
 }}
 """
-    
-    response = get_ai_response(
+
+    response = get_gemini_response(
         prompt=analysis_prompt,
-        conversation_history=conversation_history_for_ai,
-        expect_json=True
+        system_instruction=CLARITY_ANALYZER_SYSTEM,
+        conversation_history=conversation_history_for_ai
     )
+    logging.info(f"AI Response is :{response}")
     
     try:
-        analysis = json.loads(response)
+        analysis = extract_json_from_text(response) 
     except:
-        analysis = extract_json_from_text(response)
+        analysis =  {}
+        raise
     
-    if not analysis:
-        logging.error("Failed to parse prompt analysis")
-        ti.xcom_push(key="prompt_clarity", value="error")
-        return "send_error_email"
+    # Always store analysis (even if partial)
+    idea_description = analysis.get("idea_description", "A short professional talking-head video")
+    if analysis.get("has_clear_idea") == False:
+        idea_description = f"Based on your message, I think you want: {idea_description}"
+    else:
+        idea_description = analysis.get("idea_description", idea_description)
     
-    logging.info(f"Prompt analysis: {analysis}")
-    ti.xcom_push(key="prompt_analysis", value=analysis)
+    ti.xcom_push(key="prompt_analysis", value={
+        "has_clear_idea": True,  # We force this now
+        "idea_description": idea_description,
+        "script_quality": "none",
+        "suggested_title": analysis.get("suggested_title", "Your Video"),
+        "tone": analysis.get("tone", "professional")
+    })
     
-    has_clear_idea = analysis.get("has_clear_idea", False)
-    has_script = analysis.get("has_script", False)
-    script_quality = analysis.get("script_quality", "none")
-    
-    if not has_clear_idea:
-        logging.info("Prompt lacks clear idea")
-        return "send_unclear_idea_email"
-    
-    if not has_script or script_quality == "none":
-        logging.info("Prompt has idea but needs script generation")
+    logging.info(f"Forcing script generation with interpreted idea: {idea_description}")
+    action = analysis.get("action")
+    if action == "generate_video":
+        # User already gave script or approved → go straight to video
+        # We also store the raw user message as the final script
+        ti.xcom_push(key="final_script", value=prompt)
+        return "generate_video"
+    else:
         return "generate_script"
-    
-    if script_quality == "partial":
-        logging.info("Prompt has partial script, generating complete script")
-        return "generate_script"
-    
-    logging.info("Prompt has clear idea and complete script")
-    return "generate_video"
 
 def send_missing_elements_email(**kwargs):
     """Send email about missing elements."""
@@ -517,10 +556,9 @@ The script should be:
 Return ONLY the script text, no additional formatting or explanations.
 """
     
-    generated_script = get_ai_response(
+    generated_script = get_gemini_response(
         prompt=script_prompt,
-        conversation_history=conversation_history_for_ai,
-        expect_json=False
+        conversation_history=conversation_history_for_ai
     )
     
     if not generated_script or "error" in generated_script.lower():
