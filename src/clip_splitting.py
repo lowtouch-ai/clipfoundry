@@ -15,11 +15,11 @@ import google.generativeai as genai
 # ==============================================================================
 
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", Variable.get("google_api_key", default_var="YOUR_API_KEY_HERE"))
-GEMINI_MODEL = Variable.get("video.companion.gemini.model", default_var="gemini-1.5-flash")
+GEMINI_MODEL = Variable.get("video.companion.gemini.model", default_var="gemini-2.5-pro")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# ==============================================================================
+# ========================================================  ======================
 # HELPER FUNCTIONS
 # ==============================================================================
 
@@ -39,53 +39,41 @@ def get_gemini_response(prompt: str, system_instruction: str = None, temperature
         logging.error(f"Gemini API error: {e}", exc_info=True)
         return json.dumps({"error": f"AI request failed: {str(e)}"})
 
-def build_scene_config(segments, aspect_ratio="16:9"):
+def build_scene_config(segments_data, aspect_ratio="16:9"):
     """
-    Transforms raw text segments into the configuration objects required by downstream tasks.
-    
-    Output Structure:
-    [
-      {
-        'image_path': None,  # Workaround: Null for now
-        'prompt': "Segment text...",
-        'duration': 5.5,     # Calculated
-        'aspect_ratio': "16:9"
-      },
-      ...
-    ]
+    Transforms AI output into downstream config.
+    NOW: Uses the 'duration' provided by the AI, with safety clamping.
     """
     MAX_SCENES = 10
-    # Constraints for valid duration
-    MIN_DURATION = 3.0 
-    MAX_DURATION = 8.0 
-    WORDS_PER_SEC = 2.0 # Slower, cinematic pacing
+    
+    # Safety Limits (In case AI hallucinates a 20s or 1s duration)
+    ABSOLUTE_MIN = 5.0
+    ABSOLUTE_MAX = 10.0
     
     final_config = []
     
-    # 1. Truncate strictly
-    if len(segments) > MAX_SCENES:
-        logging.warning(f"⚠️ Input had {len(segments)} segments. Truncating to {MAX_SCENES}.")
-        segments = segments[:MAX_SCENES]
+    # 1. Truncate
+    if len(segments_data) > MAX_SCENES:
+        segments_data = segments_data[:MAX_SCENES]
 
-    for i, seg in enumerate(segments):
+    for item in segments_data:
+        # Extract fields
+        text = item.get("text", "").strip()
+        ai_duration = float(item.get("duration", 6.0)) # Default to 6s if missing
+        
         # Clean text
-        text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', seg, flags=re.IGNORECASE).strip()
+        text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', text, flags=re.IGNORECASE).strip()
         
-        # Calculate Duration
-        word_count = len(text.split())
-        calc_duration = round(word_count / WORDS_PER_SEC, 1)
+        # Validate/Clamp Duration (Trust but verify)
+        final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
         
-        # Clamp Duration (Keep it between 3s and 8s)
-        duration = max(MIN_DURATION, min(calc_duration, MAX_DURATION))
-        
-        # Build Item
-        item = {
-            "image_path": None,  # <--- Workaround as requested
+        config_item = {
+            "image_path": None,
             "prompt": text,
-            "duration": duration,
+            "duration": final_duration,
             "aspect_ratio": aspect_ratio
         }
-        final_config.append(item)
+        final_config.append(config_item)
 
     return final_config
 
@@ -144,14 +132,26 @@ with DAG(
         SYSTEM_PROMPT_FORMATTER = """
         You are a Video Pacing Expert.
         Refine segments for TTS (Text-to-Speech).
-
+        
         CRITICAL RULES:
         1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
         2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
-        3. **NATURAL FLOW**: Group short, dramatic phrases together.
+        3. **ASSIGN DURATION**: For each segment, you must assign a specific duration in seconds.
+           - **MINIMUM**: 5.0 seconds
+           - **MAXIMUM**: 8.0 seconds
+           - Logic: Use 5s for shorter punchy lines, 8s for longer descriptive lines.
+        4. **PAD IF NEEDED**: If a segment cannot be merged, slightly rewrite it to be more descriptive to increase duration.
+           * Input: "Mars Horizon."
+           * Output: "Witness the revelation of the red planet in Mars Horizon."
+        5. **NATURAL FLOW**: Group short, dramatic phrases together.
            * BAD: ["Until now.", "An anomaly."]
            * GOOD: ["Until now, an anomaly waits beneath the sands."]
-        4. **FORMAT**: Return a pure JSON list of strings.
+        6. **OUTPUT FORMAT**: Return a JSON list of objects.
+           Example:
+           [
+             { "text": "Until now, a strange ancient anomaly waits beneath.", "duration": 6.5 },
+             { "text": "Witness the revelation of the red planet.", "duration": 5.0 }
+           ]
         """
 
         # --- INPUT HANDLING ---
