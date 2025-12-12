@@ -31,7 +31,7 @@ GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
 OLLAMA_HOST = Variable.get("video.companion.ollama.host", "http://agentomatic:8000")
 SHARED_IMAGES_DIR = "/appz/shared_images"
 VIDEO_OUTPUT_DIR = "/appz/video_outputs"
-GEMINI_API_KEY = "AIzaSyApkOmT3Dh_NhKHohTSAwsgH_MXs4LDOzw"
+GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
