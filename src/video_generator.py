@@ -28,7 +28,6 @@ default_args = {
 
 VIDEO_COMPANION_FROM_ADDRESS = Variable.get("video.companion.from.address")
 GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
-OLLAMA_HOST = Variable.get("video.companion.ollama.host", "http://agentomatic:8000")
 SHARED_IMAGES_DIR = "/appz/shared_images"
 VIDEO_OUTPUT_DIR = "/appz/video_outputs"
 GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
