@@ -14,7 +14,8 @@ import logging
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import re
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -31,7 +32,6 @@ GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
 SHARED_IMAGES_DIR = "/appz/shared_images"
 VIDEO_OUTPUT_DIR = "/appz/video_outputs"
 GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
-genai.configure(api_key=GEMINI_API_KEY)
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
 GEMINI_MODEL = Variable.get("video.companion.gemini.model", default_var="gemini-2.5-flash")
@@ -54,10 +54,24 @@ Required JSON format (no deviations):
 }
 """
 
+def is_agent_trigger(conf):
+    """Returns True if triggered by Agent (or missing 'From' header), False if Email."""
+    agent_headers = conf.get("agent_headers")
+    email_from = conf.get("email_data", {}).get("headers", {}).get("From")
+    return bool(agent_headers) or not bool(email_from)
+
 def authenticate_gmail():
     """Authenticate Gmail API."""
     try:
-        creds = Credentials.from_authorized_user_info(json.loads(GMAIL_CREDENTIALS))
+        # 1. Determine if credentials are Dict or String
+        if isinstance(GMAIL_CREDENTIALS, dict):
+            creds_info = GMAIL_CREDENTIALS
+        else:
+            # Parse string (e.g. from Airflow Variable) into Dict
+            creds_info = json.loads(GMAIL_CREDENTIALS)
+
+        # 2. Pass the Dict directly (Do NOT json.load it again)
+        creds = Credentials.from_authorized_user_info(creds_info)
         service = build("gmail", "v1", credentials=creds)
         profile = service.users().getProfile(userId="me").execute()
         logging.info(f"Authenticated Gmail: {profile.get('emailAddress')}")
@@ -85,33 +99,26 @@ def get_gemini_response(
         Model response as string.
     """
     try:
-        # Always request JSON mime type for more reliable structured output
-        # (especially useful when system_instruction asks for JSON)
-        generation_config = genai.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=temperature,
-        )
-
-        # Create model with system instruction
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=system_instruction,
-            generation_config=generation_config,
-        )
-
-        # Build chat history in Gemini's expected format
-        chat_history = []
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
+        contents_payload = []
         if conversation_history:
             for turn in conversation_history:
-                chat_history.append({"role": "user", "parts": [turn["prompt"]]})
-                chat_history.append({"role": "model", "parts": [turn["response"]]})
+                contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=turn["prompt"])]))
+                contents_payload.append(types.Content(role="model", parts=[types.Part.from_text(text=turn["response"])]))
+        
+        contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
-        # Start chat and send message
-        chat = model.start_chat(history=chat_history)
-        response = chat.send_message(prompt)
-
-        return response.text.strip()
-
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                temperature=temperature
+            ),
+            contents=contents_payload
+        )
+        return response.text
     except Exception as e:
         logging.error(f"Gemini API error: {e}", exc_info=True)
         error_msg = f"AI request failed: {str(e)}"
@@ -121,13 +128,35 @@ def get_gemini_response(
 def extract_json_from_text(text):
     """Extract JSON from text."""
     try:
+        if not text: return None
         text = text.strip()
-        text = re.sub(r'```json\s*', '', text)
-        text = re.sub(r'```\s*', '', text)
         
-        match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+        # 1. Try Direct Parse (Fastest)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Clean Markdown Code Blocks
+        # Remove ```json ... ``` or just ``` ... ```
+        pattern = r"```(?:json)?\s*(.*?)\s*```"
+        match = re.search(pattern, text, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            text = match.group(1).strip()
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass # Continue if markdown content wasn't clean JSON
+
+        # 3. Robust Brute Force (Find outermost brackets)
+        # Finds the first '{' and the last '}'
+        start = text.find('{')
+        end = text.rfind('}')
+        
+        if start != -1 and end != -1 and end > start:
+            json_str = text[start : end + 1]
+            return json.loads(json_str)
+            
         return None
     except Exception as e:
         logging.error(f"JSON extraction error: {e}")
@@ -183,43 +212,68 @@ def mark_message_as_read(service, message_id):
         return False
 
 def validate_input(**kwargs):
-    """Validate if email has both prompt and images."""
+    """
+    Validate input from both Email and Agent sources.
+    """
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
+    # 1. Extract raw config sections
+    agent_headers = conf.get("agent_headers", {})
+    chat_inputs = conf.get("chat_inputs", {})
     email_data = conf.get("email_data", {})
-    images = conf.get("images", [])
+    # 2. Unified Extraction Strategy
+    # Check Chat Inputs first (Agent), then fallback to Email Data
+    prompt = chat_inputs.get("message", "") or email_data.get("content", "")
+    prompt = prompt.strip()
+    
+    # Images might be in 'files' (Agent) or 'images' (Email/Direct)
+    images = chat_inputs.get("files", []) or conf.get("images", [])
+    
     chat_history = conf.get("chat_history", [])
     thread_id = conf.get("thread_id", "")
     message_id = conf.get("message_id", "")
     
+    # 3. Push Standardized Data to XCom
     ti = kwargs['ti']
-    ti.xcom_push(key="email_data", value=email_data)
+    ti.xcom_push(key="agent_headers", value=agent_headers)
+    
+    # Update email_data in XCom to ensure downstream tasks find the content
+    # regardless of where it came from
+    updated_email_data = email_data.copy()
+    updated_email_data["content"] = prompt
+    ti.xcom_push(key="email_data", value=updated_email_data)
     ti.xcom_push(key="images", value=images)
     ti.xcom_push(key="chat_history", value=chat_history)
     ti.xcom_push(key="thread_id", value=thread_id)
     ti.xcom_push(key="message_id", value=message_id)
     
-    prompt = email_data.get("content", "").strip()
-    headers = email_data.get("headers", {})
-    sender_email = headers.get("From", "")
-    
     logging.info(f"Validating input - Prompt length: {len(prompt)}, Images: {len(images)}")
     
-    # Check for missing elements
+    # 4. Validation Logic
     missing = []
     if not prompt:
         missing.append("prompt/idea")
+    # NOTE: If you want to allow Script Generation WITHOUT images, 
+    # remove the next two lines. Currently, images are mandatory.
     if not images:
         missing.append("image(s)")
     
     if missing:
-        logging.warning(f"Missing required elements: {', '.join(missing)}")
+        logging.warning(f"Missing: {missing}")
         ti.xcom_push(key="validation_status", value="missing_elements")
         ti.xcom_push(key="missing_elements", value=missing)
-        return "send_missing_elements_email"
+        
+        # Check Source
+        is_agent = bool(agent_headers) or not bool(email_data.get("headers", {}).get("From"))
+        
+        if is_agent:
+            logging.info("Agent Trigger + Missing Info -> Stopping DAG (Agent will read XCom)")
+            return "end" # Bypass email task
+        else:
+            return "send_missing_elements_email"
     
-    logging.info("Input validation passed - has prompt and images")
+    logging.info("Input valid")
     ti.xcom_push(key="validation_status", value="valid")
     return "validate_prompt_clarity"
 
@@ -244,27 +298,28 @@ def validate_prompt_clarity(**kwargs):
     
     # Still do analysis to extract useful context (topic, tone, etc.)
     analysis_prompt = f"""
-Analyze this user message and extract the best possible video idea:
+Analyze this user message to determine the next step.
 
 USER MESSAGE: "{prompt}"
 
-Return ONLY valid JSON:
-{{
-  "has_clear_idea": true|false,
-  "idea_description": "best possible one-sentence summary of what video to make",
-  "suggested_title": "short catchy title for the video",
-  "target_audience": "who this video is for (guess if needed)",
-  "tone": "professional|friendly|energetic|calm|motivational|etc",
-  "reasoning": "how you interpreted the request",
-  "action": "generate_video" | "generate_script",
-}}
-- If action is generate_video:
-    - Parse the resolution and aspect ratio from USER MESSAGE. 
-    - If the User doesnot specify any resolution or aspect ratio keep it to default as :
-        aspect_ratio:16:9
-        resoltuion:720p
-    - add both values in above returning json.
-"""
+    CRITICAL ROUTING RULES:
+    1. "has_script": true ONLY if the user provided the EXACT VERBATIM text to be spoken.
+    2. "has_script": false if the user provided an IDEA, TOPIC, or asked YOU to write the script.
+    3. "action": "generate_video" if has_script is true.
+    4. "action": "generate_script" if has_script is false.
+
+    Return JSON:
+    {{
+      "has_clear_idea": true|false,
+      "has_script": true|false,
+      "idea_description": "summary",
+      "suggested_title": "title",
+      "tone": "tone",
+      "action": "generate_video" | "generate_script",
+      "aspect_ratio": "16:9", 
+      "resolution": "720p"
+    }}
+    """
 
     response = get_gemini_response(
         prompt=analysis_prompt,
@@ -273,18 +328,11 @@ Return ONLY valid JSON:
     )
     logging.info(f"AI Response is :{response}")
     
-    try:
-        analysis = extract_json_from_text(response) 
-    except:
-        analysis =  {}
-        raise
+    analysis = extract_json_from_text(response) or {}
     
     # Always store analysis (even if partial)
     idea_description = analysis.get("idea_description", "A short professional talking-head video")
-    if analysis.get("has_clear_idea") == False:
-        idea_description = f"Based on your message, I think you want: {idea_description}"
-    else:
-        idea_description = analysis.get("idea_description", idea_description)
+    has_script = analysis.get("has_script", False) # Default to False if missing
     
     ti.xcom_push(key="prompt_analysis", value={
         "has_clear_idea": True,  # We force this now
@@ -296,14 +344,13 @@ Return ONLY valid JSON:
         "resolution": analysis.get("resolution", "16:9")
     })
     
-    logging.info(f"Forcing script generation with interpreted idea: {idea_description}")
-    action = analysis.get("action")
-    if action == "generate_video":
-        # User already gave script or approved → go straight to video
-        # We also store the raw user message as the final script
+    # Only skip to video if we explicitly have a script
+    if has_script:
+        logging.info("User provided a script. Routing to Video Generation.")
         ti.xcom_push(key="final_script", value=prompt)
         return "generate_video"
     else:
+        logging.info(f"No script detected (Idea: {idea_description}). Routing to Script Generation.")
         return "generate_script"
 
 def send_missing_elements_email(**kwargs):
@@ -313,13 +360,19 @@ def send_missing_elements_email(**kwargs):
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
     missing_elements = ti.xcom_pull(key="missing_elements", task_ids="validate_input")
+    agent_headers = ti.xcom_pull(key="agent_headers", task_ids="validate_input") or {}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
+
+    if not sender_email:
+        sender_email = agent_headers.get("X-LTAI-User", "")
+
     sender_name = "there"
     name_match = re.search(r'^([^<]+)', sender_email)
     if name_match:
         sender_name = name_match.group(1).strip()
+        sender_email = sender_email.split("<")[1].replace(">", "").strip()
     
     subject = headers.get("Subject", "Video Generation Request")
     if not subject.lower().startswith("re:"):
@@ -404,12 +457,19 @@ def send_missing_elements_email(**kwargs):
 </html>
 """
     
-    service = authenticate_gmail()
-    if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
-        mark_message_as_read(service, message_id)
-    
-    logging.info("Sent missing elements email")
+    # 3. Send Email (ONLY if we have a valid email address)
+    if sender_email and "@" in sender_email:
+        service = authenticate_gmail()
+        if service:
+            send_email(service, sender_email, subject, html_content, thread_headers=headers)
+            
+            # 4. Mark Read (ONLY if we have a valid Message ID)
+            if message_id:
+                mark_message_as_read(service, message_id)
+            
+            logging.info(f"Sent missing elements email to {sender_email}")
+    else:
+        logging.info("No valid recipient email found. Skipping email send.")
 
 def send_unclear_idea_email(**kwargs):
     """Send email about unclear idea."""
@@ -524,158 +584,144 @@ def send_unclear_idea_email(**kwargs):
 def generate_script(**kwargs):
     """Generate video script based on user's idea."""
     ti = kwargs['ti']
+    dag_run = kwargs.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
     
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
+    AVG_WPM = 140
     
     prompt = email_data.get("content", "").strip()
     idea_description = prompt_analysis.get("idea_description", "")
     
     # Build conversation history
     conversation_history_for_ai = []
-    for i in range(0, len(chat_history), 2):
-        if i + 1 < len(chat_history):
-            user_msg = chat_history[i]
-            assistant_msg = chat_history[i + 1]
-            if user_msg["role"] == "user" and assistant_msg["role"] == "assistant":
-                conversation_history_for_ai.append({
-                    "prompt": user_msg["content"],
-                    "response": assistant_msg["content"]
-                })
+    if chat_history:
+        for i in range(0, len(chat_history), 2):
+            if i + 1 < len(chat_history):
+                user_msg = chat_history[i]
+                assistant_msg = chat_history[i + 1]
+                if user_msg["role"] == "user" and assistant_msg["role"] == "assistant":
+                    conversation_history_for_ai.append({
+                        "prompt": user_msg["content"],
+                        "response": assistant_msg["content"]
+                    })
+
+    # 3. Retry Logic
+    try_number = ti.try_number
+    logging.info(f"Generating Script - Attempt #{try_number}")
     
-    script_prompt = f"""You are a professional video script writer. Create a detailed, engaging script for a video based on this idea:
+    constraint_note = ""
+    if try_number > 1:
+        history = ti.xcom_pull(key='rejected_script_history') or []
+        reason = history[-1].get('reason') if history else "Unknown"
+        logging.info(f"Retry Reason: {reason}")
+        constraint_note = "CRITICAL: Previous script was TOO LONG. Write a significantly shorter version."
 
-USER'S IDEA: "{prompt}"
-IDEA SUMMARY: "{idea_description}"
+    # 4. Prompting
+    TARGET_DURATION = 45
+    system_instruction = f"""
+    You are 'Video Companion'.
+    GOAL: Write a video script based on user idea.
+    INSTRUCTIONS:
+    1. Target: {TARGET_DURATION}s.
+    2. Pace: {AVG_WPM} wpm.
+    3. Structure: Hook -> Body -> CTA.
+    4. {constraint_note}
+    Output JSON: {{
+        "video_meta": {{ "title": "str", "video_type": "str", "target_duration": {TARGET_DURATION} }},
+        "script_content": "text...",
+        "visual_direction": "text..."
+    }}
+    """
+    user_prompt = f"IDEA: {prompt}\nSUMMARY: {idea_description}\nGenerate script."
 
-Generate a complete video script that includes:
-1. Opening/Introduction (2-3 sentences)
-2. Main content/body (4-6 sentences covering key points)
-3. Closing/Call-to-action (1-2 sentences)
+    # 5. Generate & Parse
+    response_text = get_gemini_response(user_prompt, system_instruction, conversation_history_for_ai)
+    data = extract_json_from_text(response_text)
+    
+    if not data or "script_content" not in data:
+        logging.error(f"Invalid JSON: {response_text}")
+        raise ValueError("Script generation failed: Invalid JSON")
 
-The script should be:
-- Natural and conversational
-- Appropriate for a talking head video format
-- Between 30-60 seconds when spoken
-- Clear and engaging
+    # 6. Validate
+    script = data.get('script_content', '')
+    est_time = (len(script.split()) / AVG_WPM) * 60
+    logging.info(f"Duration: {est_time:.1f}s")
+    
+    if est_time > TARGET_DURATION * 1.2:
+        reason = f"Duration {est_time:.1f}s too long"
+        logging.warning(f"FAILING: {reason}")
+        # Save History
+        rej = {"attempt": try_number, "duration": est_time, "script": script, "reason": reason}
+        old_hist = ti.xcom_pull(key='rejected_script_history') or []
+        old_hist.append(rej)
+        ti.xcom_push(key='rejected_script_history', value=old_hist)
+        # Trigger Retry
+        raise ValueError(reason)
 
-Return ONLY the script text, no additional formatting or explanations.
+    # 7. Format Output
+    data['video_meta']['actual_duration'] = est_time
+    meta = data.get('video_meta', {})
+    script_html = script.replace("\n", "<br>")
+    
+    agent_markdown = f"""### 🎬 Script: {meta.get('title')}
+**Target:** {TARGET_DURATION}s | **Est:** {est_time:.1f}s | **Type:** {meta.get('video_type')}
+---
+**📝 Script:**
+> {script}
+
+**🎨 Visuals:**
+_{data.get('visual_direction')}_
 """
-    
-    generated_script = get_gemini_response(
-        prompt=script_prompt,
-        conversation_history=conversation_history_for_ai
-    )
-    
-    if not generated_script or "error" in generated_script.lower():
-        logging.error("Script generation failed")
-        ti.xcom_push(key="script_generation_error", value=True)
-        return
-    
-    logging.info(f"Generated script (length: {len(generated_script)} chars)")
-    ti.xcom_push(key="generated_script", value=generated_script)
-    
-    # Send confirmation email
-    headers = email_data.get("headers", {})
-    sender_email = headers.get("From", "")
-    sender_name = "there"
-    name_match = re.search(r'^([^<]+)', sender_email)
-    if name_match:
-        sender_name = name_match.group(1).strip()
-    
-    subject = headers.get("Subject", "Video Generation Request")
-    if not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}"
-    
-    html_content = f"""
-<html>
-<head>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .greeting {{
-            margin-bottom: 15px;
-        }}
-        .message {{
-            margin: 15px 0;
-        }}
-        .script-box {{
-            background-color: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 5px;
-            padding: 20px;
-            margin: 20px 0;
-            white-space: pre-wrap;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-        }}
-        .confirmation-request {{
-            background-color: #d1ecf1;
-            border-left: 4px solid #0c5460;
-            padding: 15px;
-            margin: 20px 0;
-        }}
-        .closing {{
-            margin-top: 20px;
-        }}
-        .signature {{
-            margin-top: 20px;
-            font-weight: bold;
-        }}
-    </style>
-</head>
-<body>
-    <div class="greeting">
-        <p>Hello {sender_name},</p>
+
+    email_html = f"""
+    <div style="font-family: Arial; color: #333;">
+        <h2 style="color: #2c3e50;">🎬 Script: {meta.get('title')}</h2>
+        <p><b>Target:</b> {TARGET_DURATION}s | <b>Est:</b> {est_time:.1f}s</p>
+        <h3 style="color: #2980b9;">📝 Script</h3>
+        <blockquote style="background: #f9f9f9; border-left: 5px solid #2980b9; padding: 10px;">{script_html}</blockquote>
+        <h3 style="color: #27ae60;">🎨 Visuals</h3>
+        <div style="background: #eafaf1; padding: 10px;">{data.get('visual_direction')}</div>
     </div>
-    
-    <div class="message">
-        <p>Great! I've analyzed your idea and generated a script for your video. Please review it below:</p>
-    </div>
-    
-    <div class="script-box">
-{generated_script}
-    </div>
-    
-    <div class="confirmation-request">
-        <strong>Next Steps:</strong>
-        <p>Please review the script and let me know:</p>
-        <ul>
-            <li><strong>If you approve:</strong> Reply with "approved", "looks good", "proceed", or any confirmation</li>
-            <li><strong>If you want changes:</strong> Reply with your requested modifications</li>
-        </ul>
-    </div>
-    
-    <div class="message">
-        <p>Once you confirm, I'll proceed with generating your video using the provided images.</p>
-    </div>
-    
-    <div class="closing">
-        <p>Looking forward to your feedback!</p>
-    </div>
-    
-    <div class="signature">
-        <p>Best regards,<br>
-        Video Companion Assistant</p>
-    </div>
-</body>
-</html>
-"""
-    
-    service = authenticate_gmail()
-    if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
-        mark_message_as_read(service, message_id)
-    
-    logging.info("Sent script confirmation email")
+    """
+
+    # 8. Send Email (Hybrid Check)
+    if not is_agent_trigger(conf):
+        headers = email_data.get("headers", {})
+        sender_email = headers.get("From", "")
+        
+        if sender_email:
+            logging.info("Sending approval email...")
+            sender_name = "there"
+            if "<" in sender_email:
+                 sender_name = sender_email.split("<")[0].strip()
+                 sender_email_addr = sender_email.split("<")[1].replace(">", "").strip()
+            else:
+                 sender_email_addr = sender_email
+
+            subject = headers.get("Subject", "Video Script Approval")
+            if not subject.lower().startswith("re:"): subject = f"Re: {subject}"
+
+            service = authenticate_gmail()
+            if service:
+                body = f"<html><body><p>Hello {sender_name},</p><p>Script draft:</p>{email_html}</body></html>"
+                send_email(service, sender_email_addr, subject, body, thread_headers=headers)
+                mark_message_as_read(service, message_id)
+                logging.info(f"Script approval email sent to {sender_email_addr}")
+    else:
+        logging.info("Agent trigger detected: Skipping script approval email.")
+
+    # 9. Return Unified Payload
+    ti.xcom_push(key="generated_script", value=script)
+    return {
+        "status": "success",
+        "markdown_output": agent_markdown,
+        "email_html": email_html, 
+        "raw_data": data
+    }
 
 def generate_video(**kwargs):
     """Generate video from images and script."""
@@ -727,6 +773,11 @@ def generate_video(**kwargs):
 def send_video_email(**kwargs):
     """Send generated video to user."""
     ti = kwargs['ti']
+    dag_run = kwargs.get('dag_run')
+    
+    if is_agent_trigger(dag_run.conf):
+        logging.info("Agent trigger detected: Skipping video delivery email")
+        return
     
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
@@ -995,11 +1046,12 @@ This DAG processes video generation requests from email.
 
 with DAG(
     "video_companion_processor",
+    description="video_companion_processor:v0.1",
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
     doc_md=readme_content,
-    tags=["video", "companion", "processor"]
+    tags=["video", "companion", "processor", "conversational"]
 ) as dag:
 
     validate_input_task = BranchPythonOperator(
@@ -1065,8 +1117,7 @@ with DAG(
         send_error_email_task
     ]
     
-    generate_script_task >> end_task
-    generate_video_task >> send_video_email_task >> end_task
+    generate_video_task >> send_video_email_task
     
     send_missing_elements_task >> end_task
     send_unclear_idea_task >> end_task
