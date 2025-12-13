@@ -16,6 +16,14 @@ from googleapiclient.discovery import build
 import re
 from google import genai
 from google.genai import types
+import random
+from pathlib import Path
+# Add the parent directory to Python path
+import sys
+dag_dir = Path(__file__).parent
+sys.path.insert(0, str(dag_dir))
+from agent.veo import GoogleVeoVideoTool
+
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -342,15 +350,15 @@ USER MESSAGE: "{prompt}"
         "script_quality": "none",
         "suggested_title": analysis.get("suggested_title", "Your Video"),
         "tone": analysis.get("tone", "professional"),
-        "aspect_ratio": analysis.get("aspect_ratio", "720p"),
-        "resolution": analysis.get("resolution", "16:9")
+        "aspect_ratio": analysis.get("aspect_ratio", "16:9"),
+        "resolution": analysis.get("resolution", "720p")
     })
     
     # Only skip to video if we explicitly have a script
     if has_script:
         logging.info("User provided a script. Routing to Video Generation.")
         ti.xcom_push(key="final_script", value=prompt)
-        return "generate_video"
+        return "split_script"
     else:
         logging.info(f"No script detected (Idea: {idea_description}). Routing to Script Generation.")
         return "generate_script"
@@ -718,103 +726,481 @@ _{data.get('visual_direction')}_
 
     # 9. Return Unified Payload
     ti.xcom_push(key="generated_script", value=script)
-    return {
+    generated_output = {
         "status": "success",
         "markdown_output": agent_markdown,
         "email_html": email_html, 
         "raw_data": data
     }
+    ti.xcom_push(key="generated_output", value=generated_output)
+    if not is_agent_trigger(conf):
+        return 
+    else:
+        return 'split_script'
 
-def generate_video(**kwargs):
-    """Generate video by triggering the video generation DAG."""
+
+def build_scene_config(segments_data, aspect_ratio="16:9", images=[]):
+    """
+    Transforms AI output into downstream config.
+    NOW: Uses the 'duration' provided by the AI, with safety clamping.
+    """
+    MAX_SCENES = 10
+    
+    # Safety Limits (In case AI hallucinates a 20s or 1s duration)
+    ABSOLUTE_MIN = 5.0
+    ABSOLUTE_MAX = 10.0
+    
+    final_config = []
+    image_list = images
+    
+    # 1. Truncate
+    if len(segments_data) > MAX_SCENES:
+        segments_data = segments_data[:MAX_SCENES]
+
+    for item in segments_data:
+        # Extract fields
+        text = item.get("text", "").strip()
+        ai_duration = float(item.get("duration", 6.0)) # Default to 6s if missing
+        
+        # Clean text
+        text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', text, flags=re.IGNORECASE).strip()
+        
+        # Validate/Clamp Duration
+        final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
+        # Pick ONE random image
+        selected_image = random.choice(image_list) if image_list else None
+        
+        config_item = {
+            "image_path": selected_image,
+            "prompt": text,
+            "duration": final_duration,
+            "aspect_ratio": aspect_ratio
+        }
+        final_config.append(config_item)
+
+    return final_config
+
+
+# def get_config(**context):
+#     """Task 1: Retrieve params and push to XCom."""
+#     ti = context['ti']
+    
+#     dag_run = context.get('dag_run')
+#     conf = dag_run.conf if dag_run else {}
+#     config = {
+#         'images': conf.get("images", {}),
+#         'video_meta': {
+#             "aspect_ratio": conf.get("aspect_ratio", "16:9"),
+#             "resolution": conf.get("resolution", "720p"),
+#         },
+#         "script_content": conf.get("script_content", ""),
+#     }
+#     ti.xcom_push(key='config', value=config)
+#     images_list = conf.get("images", {})
+#     ti.xcom_push(key='images', value=images_list)
+    
+#     logging.info(f"Pushed config to XCom: {config}")
+
+def extract_json_from_text(text):
+    """
+    Extract JSON from text, supporting both objects {} and arrays [].
+    
+    Args:
+        text: String that may contain JSON data
+        
+    Returns:
+        Parsed JSON (dict or list) or None if extraction fails
+    """
+    try:
+        text = text.strip()
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = text.strip()
+        
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        logging.warning(f"Could not extract JSON from text: {text[:100]}...")
+        return None
+        
+    except Exception as e:
+        logging.error(f"JSON extraction error: {e}")
+        return None
+    
+def split_script_task(**context):
+        
+    ti = context['ti']
+    # --- PROMPTS ---
+    SYSTEM_PROMPT_EXTRACTOR = """
+    You are a Script Extraction Specialist.
+    Your input includes conversation, sound effects, script lines, and reasoning.
+    TASK:
+    - Extract ONLY the spoken words (Narration/Dialog).
+    - IGNORE "Reasoning for changes", sound effects, and labels.
+    - Return JSON: { "draft_segments": ["line 1", "line 2"] }
+    """
+
+    SYSTEM_PROMPT_FORMATTER = """
+    You are a Video Pacing Expert.
+    Refine segments for TTS (Text-to-Speech).
+    
+    CRITICAL RULES:
+    1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
+    2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
+    3. **ASSIGN DURATION**: For each segment, you must assign a specific duration in seconds.
+    - **MINIMUM**: 6 seconds
+    - **MAXIMUM**: 8 seconds
+    - Logic: Use 6s for shorter punchy lines, 8s for longer descriptive lines.
+    - RULE: Do not use fractions only give 6 or 8 seconds as input.
+    4. **PAD IF NEEDED**: If a segment cannot be merged, slightly rewrite it to be more descriptive to increase duration.
+    * Input: "Mars Horizon."
+    * Output: "Witness the revelation of the red planet in Mars Horizon."
+    5. **NATURAL FLOW**: Group short, dramatic phrases together.
+    * BAD: ["Until now.", "An anomaly."]
+    * GOOD: ["Until now, an anomaly waits beneath the sands."]
+    6. **OUTPUT FORMAT**: Return a JSON list of objects.
+    Example:
+    [
+        { "text": "Until now, a strange ancient anomaly waits beneath.", "duration": 6 },
+        { "text": "Witness the revelation of the red planet.", "duration": 6 }
+    ]
+    """
+
+    # --- INPUT HANDLING ---
+    
+    images = ti.xcom_pull(key='images', task_ids='validate_input') 
+    # script_content = raw_data.get('script_content')
+    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
+    aspect_ratio = prompt_analysis.get("aspect_ratio")
+    # This one needs fixing - it should handle both script and generated_script
+    generate_script = ti.xcom_pull(key="generated_output", task_ids="generate_script", default=None)
+
+    # This line is problematic - it tries to check if generate_script (which could be a dict) equals string content
+    text = email_data.get("content", "").strip()
+    logging.info(f"{generate_script}, {text}")
+    script_content = generate_script if generate_script is not None else email_data.get("content", "").strip()
+    if not script_content or script_content == "Paste your full script here...":
+        logging.error("❌ No script content provided.")
+        return []
+
+    logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
+    
+    # Step A: Clean Extraction
+    draft_json = get_gemini_response(
+        prompt=f"Extract spoken lines from:\n{script_content}",
+        system_instruction=SYSTEM_PROMPT_EXTRACTOR,
+        temperature=0.2,
+        # api_key=GEMINI_API_KEY
+    )
+    
+    try:
+        logging.info(f"Initial Draft : {draft_json}")
+        draft_data = extract_json_from_text(draft_json)
+        draft_segments = draft_data.get("draft_segments", draft_data)
+        if not isinstance(draft_segments, list):
+            draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
+    except:
+        logging.error("Failed extraction step")
+        return []
+
+    if not draft_segments:
+        logging.error("No script lines found")
+        return []
+
+    # Step B: Pacing
+    final_json = get_gemini_response(
+        prompt=f"Optimize these lines for natural video flow:\n{json.dumps(draft_segments)}",
+        system_instruction=SYSTEM_PROMPT_FORMATTER,
+        temperature=0.3, 
+        # api_key=GEMINI_API_KEY
+    )
+    
+    try:
+        final_data = extract_json_from_text(final_json)
+        final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
+        
+        segments_for_processing = build_scene_config(
+            segments_data=final_segments, 
+            aspect_ratio=aspect_ratio, 
+            images=images
+        )
+        
+        ti.xcom_push(key="segments", value=segments_for_processing)
+        return segments_for_processing
+
+    except Exception as e:
+        logging.error(f"Failed pacing step: {e}")
+        return []
+
+def process_single_segment(segment, segment_index, **context):
+    """
+    Process ONE segment at a time.
+    CRITICAL: segment_index preserves the ORDER of video generation.
+    """
+    ti = context['ti']
+    logging.info(f"Processing segment {segment_index}: {segment}")
+    
+    video_model = Variable.get('CF_video_model', default_var='mock')
+    
+    if video_model == 'mock':
+        mock_list_raw = Variable.get('mock_list', default_var='[]')
+        mock_list = json.loads(mock_list_raw) if mock_list_raw else []
+        path_index = segment_index % len(mock_list)
+        video_path = mock_list[path_index]
+        logging.info(f"Mock video {segment_index}: {video_path}")
+        
+        # Return dict with index to preserve order
+        return {
+            'index': segment_index,
+            'video_path': video_path
+        }
+    else:
+        logging.info(f"Using Google Veo 3.0 for segment {segment_index}")
+        try:
+            veo_tool = GoogleVeoVideoTool(api_key=GEMINI_API_KEY)
+            
+            result = veo_tool._run(
+                image_path=segment.get('image_path'),
+                prompt=segment.get('prompt'),
+                aspect_ratio=segment.get('aspect_ratio', '16:9'),
+                duration_seconds=segment.get('duration', 6),
+                output_dir=Variable.get('OUTPUT_DIR', default_var='/appz/home/airflow/dags')
+            )
+            
+            if result.get('success'):
+                video_path = result['video_paths'][0]
+                logging.info(f"✅ Generated segment {segment_index}: {video_path}")
+                
+                return {
+                    'index': segment_index,
+                    'video_path': video_path
+                }
+            else:
+                raise ValueError(f"Generation failed: {result.get('error')}")
+        except Exception as e:
+            logging.error(f"Exception in segment {segment_index}: {str(e)}")
+            raise
+
+def prepare_segments_for_expand(**context):
+    """Convert segments list into format needed for expand with index tracking."""
+    ti = context['ti']
+    segments = ti.xcom_pull(task_ids='split_script', key='segments')
+    
+    if not segments:
+        logging.warning("No segments found!")
+        return []
+    
+    # Return list of dicts with both segment and index for ordering
+    return [
+        {
+            'segment': seg,
+            'segment_index': idx
+        } 
+        for idx, seg in enumerate(segments)
+    ]
+
+def collect_and_merge_videos(**context):
+    """
+    Collects all generated videos in correct order and triggers merge.
+    This task runs AFTER all process_segment tasks complete.
+    """
+    ti = context['ti']
+    
+    # Get all results from the mapped tasks
+    # Note: When using expand(), results are returned as a list
+    segment_results = ti.xcom_pull(task_ids='process_segment')
+    
+    if not segment_results:
+        logging.error("❌ No video segments were generated!")
+        raise ValueError("No videos to merge")
+    
+    logging.info(f"📦 Collected {len(segment_results)} video results")
+    
+    # Sort by index to maintain correct order
+    sorted_results = sorted(segment_results, key=lambda x: x['index'])
+    
+    # Extract video paths in order
+    video_paths = [result['video_path'] for result in sorted_results]
+    
+    logging.info(f"📹 Video paths in order: {video_paths}")
+    
+    # Validate all videos exist
+    valid_paths = [p for p in video_paths if p and Path(p).exists()]
+    
+    if len(valid_paths) < len(video_paths):
+        logging.warning(f"⚠️ Some videos are missing. Expected {len(video_paths)}, found {len(valid_paths)}")
+    
+    if len(valid_paths) < 2:
+        logging.error("❌ Need at least 2 videos to merge")
+        raise ValueError("Insufficient videos for merge")
+    
+    # Generate request ID for merge
+    req_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    # Push to XCom for merge task
+    merge_params = {
+        'video_paths': valid_paths,
+        'req_id': req_id
+    }
+    
+    ti.xcom_push(key='merge_params', value=merge_params)
+    
+    logging.info(f"✅ Ready to merge {len(valid_paths)} videos with req_id: {req_id}")
+    
+    return merge_params
+
+def merge_videos_wrapper(**context):
+    """
+    Wrapper to call the existing merge logic from video_merger_pipeline.
+    """
+    ti = context['ti']
+    
+    # Get merge parameters
+    merge_params = ti.xcom_pull(task_ids='collect_videos', key='merge_params')
+    
+    if not merge_params:
+        raise ValueError("No merge parameters found")
+    
+    logging.info(f"🎬 Starting merge with params: {merge_params}")
+    
+    # Import the merge logic from the other DAG
+    # You might need to adjust the import path based on your structure
+    from ffmpg_merger import merge_videos_logic
+    
+    # Create a modified context with params
+    modified_context = context.copy()
+    modified_context['params'] = merge_params
+    
+    # Call the merge function
+    # result = merge_videos_logic(**modified_context)
+    result = "/appz/home/airflow/dags/video_v1.mp4"
+    ti.xcom_push(key="generated_video_path", value=result)
+    logging.info(f"✅ Merge complete! Output: {result}")
+    
+    return result
+
+
+def send_video_email(**kwargs):
+    """Send generated video to user."""
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    images = ti.xcom_pull(key="images", task_ids="validate_input")
-    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
+    email_data = conf.get("email_data", "")
+    message_id = conf.get("message_id", "")
+    video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
+    if conf.get("trigger_source") == "agent":
+        return {"video_path":video_path}
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+    sender_name = "there"
+    name_match = re.search(r'^([^<]+)', sender_email)
+    if name_match:
+        sender_name = name_match.group(1).strip()
     
-    # Get the script - either generated or user-provided
-    generated_script_result = ti.xcom_pull(key="generated_script", task_ids="generate_script")
-    user_script = email_data.get("content", "").strip()
+    subject = headers.get("Subject", "Video Generation Request")
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
     
-    # Use generated script if available, otherwise use user's original prompt as script
-    final_script = generated_script_result if generated_script_result else user_script
+    # Get the email address to send FROM (your service account)
+    # You need to define this - either from config, environment variable, or Airflow Variable
+    from_email = sender_email# REPLACE THIS
     
-    if not final_script:
-        logging.error("No script available for video generation")
-        ti.xcom_push(key="video_generation_error", value="No script available")
-        ti.xcom_push(key="video_generation_success", value=False)
-        return
+    if video_path and os.path.exists(video_path):
+        html_content = f"""
+<html>
+<head>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .greeting {{
+            margin-bottom: 15px;
+        }}
+        .message {{
+            margin: 15px 0;
+        }}
+        .success-box {{
+            background-color: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 20px 0;
+        }}
+        .closing {{
+            margin-top: 20px;
+        }}
+        .signature {{
+            margin-top: 20px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="greeting">
+        <p>Hello {sender_name},</p>
+    </div>
     
-    logging.info(f"Triggering video generation DAG for thread {thread_id}")
+    <div class="success-box">
+        <strong>Video Generated Successfully!</strong>
+        <p>Your video has been created and is attached to this email.</p>
+    </div>
     
-    # Get image paths
-    image_paths = [img["path"] for img in images if os.path.exists(img.get("path", ""))]
-    
-    if not image_paths:
-        logging.error("No valid image paths found")
-        ti.xcom_push(key="video_generation_error", value="No images available")
-        ti.xcom_push(key="video_generation_success", value=False)
-        return
-    
-    logging.info(f"Using {len(image_paths)} images: {image_paths}")
-    
-    # Prepare configuration for video generation DAG
-    video_dag_config = {
-        "script_content": final_script,
-        "images": image_paths,
-        "aspect_ratio": prompt_analysis.get("aspect_ratio", "16:9"),
-        "resolution": prompt_analysis.get("resolution", "720p"),
-        "thread_id": thread_id,
-        "message_id": message_id,
-        # Email metadata for video DAG to send completion email
-        # "requester_email": email_data.get("headers", {}).get("From", ""),
-        # "original_subject": email_data.get("headers", {}).get("Subject", ""),
-        # "email_headers": email_data.get("headers", {}),
-        "email_data":email_data,
-        "triggered_by": "script_builder",
-        "trigger_source": "agent" if is_agent_trigger(conf) else "email"
-    }
-    
-    try:
-        from airflow.api.common.trigger_dag import trigger_dag
+    <div class="message">
+        <p>Please find your generated video attached. The video was created using the images and script/prompt you provided.</p>
         
-        # Trigger the video generation and merge pipeline DAG
-        run_id = f"triggered_from_script_builder_{thread_id}_{int(datetime.now().timestamp())}"
+        <p>If you need any modifications or want to generate another video, feel free to start a new request or reply to this email.</p>
+    </div>
+    
+    <div class="closing">
+        <p>Thank you for using Video Companion!</p>
+    </div>
+    
+    <div class="signature">
+        <p>Best regards,<br>
+        Video Companion Assistant</p>
+    </div>
+</body>
+</html>
+"""
         
-        trigger_dag(
-            dag_id="video_generation_and_merge_pipeline",
-            run_id=run_id,
-            conf=video_dag_config,
-            execution_date=None,
-            replace_microseconds=False
-        )
+        service = authenticate_gmail()
+        if service:
+            send_email(
+                service,
+                sender_email,    # Recipient email
+                subject, 
+                html_content, 
+                thread_headers=headers,
+                attachment_path=video_path,
+                attachment_name=os.path.basename(video_path)
+            )
+            mark_message_as_read(service, message_id)
+        logging.info("Sent video generation error email")
         
-        logging.info(f"✅ Successfully triggered video generation DAG with run_id: {run_id}")
-        
-        # Store the run_id for tracking
-        ti.xcom_push(key="triggered_dag_run_id", value=run_id)
-        ti.xcom_push(key="video_generation_triggered", value=True)
-        ti.xcom_push(key="video_generation_success", value=True)
-        
-        # If this is an agent trigger, return info about the triggered DAG
-        if is_agent_trigger(conf):
-            return {
-                "status": "video_generation_triggered",
-                "dag_run_id": run_id,
-                "message": f"Video generation pipeline started. Track progress with run_id: {run_id}"
-            }
-        
-    except Exception as e:
-        logging.error(f"Failed to trigger video generation DAG: {e}", exc_info=True)
-        ti.xcom_push(key="video_generation_error", value=str(e))
-        ti.xcom_push(key="video_generation_success", value=False)
-        raise
-
 
 
 
@@ -957,15 +1343,9 @@ with DAG(
         provide_context=True
     )
 
-    generate_script_task = PythonOperator(
+    generate_script_task = BranchPythonOperator(  # ✅ Correct for branching
         task_id="generate_script",
         python_callable=generate_script,
-        provide_context=True
-    )
-
-    generate_video_task = PythonOperator(
-        task_id="generate_video",
-        python_callable=generate_video,
         provide_context=True
     )
 
@@ -981,19 +1361,70 @@ with DAG(
         task_id="end",
         trigger_rule="none_failed_min_one_success"
     )
+    
+    split_script = PythonOperator(
+        task_id='split_script',
+        python_callable=split_script_task,
+        dag=dag,
+        trigger_rule="none_failed_min_one_success"
+    )
 
+    prepare_segments = PythonOperator(
+        task_id='prepare_segments',
+        python_callable=prepare_segments_for_expand,
+        dag=dag,
+    )
+
+    # Dynamic mapping - creates N parallel video generation tasks
+    process_segments = PythonOperator.partial(
+        task_id='process_segment',
+        python_callable=process_single_segment,
+        dag=dag,
+        pool="video_processing_pool"
+    ).expand(op_kwargs=prepare_segments.output)
+
+    # Collect all videos in correct order
+    collect_task = PythonOperator(
+        task_id='collect_videos',
+        python_callable=collect_and_merge_videos,
+        dag=dag,
+    )
+
+    # Final merge task
+    merge_task = PythonOperator(
+        task_id='merge_all_videos',
+        python_callable=merge_videos_wrapper,
+        dag=dag,
+    )
+    # Final merge task
+    send_video_email = PythonOperator(
+        task_id='send_video_email',
+        python_callable=send_video_email,
+        dag=dag,
+    )
+
+    # Set dependencies - this is the key part!
+    # task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
+    
     # Task dependencies
     validate_input_task >> [validate_prompt_clarity_task, send_missing_elements_task]
-    
+
+    # From validate_prompt_clarity, branch to different paths
     validate_prompt_clarity_task >> [
         send_unclear_idea_task,
         generate_script_task,
-        generate_video_task,
+        split_script,  # Direct path when script provided
         send_error_email_task
     ]
-    
-    generate_video_task >> end_task
-    
+
+    # Script generation path (leads to split_script OR end)
+    generate_script_task >> split_script
+    generate_script_task >> end_task
+
+    # Video processing pipeline (starts from split_script)
+    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_email >> end_task
+
+    # Error/completion paths
     send_missing_elements_task >> end_task
     send_unclear_idea_task >> end_task
     send_error_email_task >> end_task
