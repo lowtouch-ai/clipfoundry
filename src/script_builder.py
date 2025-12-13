@@ -467,14 +467,14 @@ def send_missing_elements_email(**kwargs):
             thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
             original_message_id = headers.get("Message-ID", "")
 
-        send_reply_to_thread(
-            service=service,
-            thread_id=thread_id,
-            message_id=original_message_id,
-            recipient=sender_email,
-            subject=subject,
-            reply_html_body=html_content
-        )
+            send_reply_to_thread(
+                service=service,
+                thread_id=thread_id,
+                message_id=original_message_id,
+                recipient=sender_email,
+                subject=subject,
+                reply_html_body=html_content
+            )
             
             # 4. Mark Read (ONLY if we have a valid Message ID)
             if message_id:
