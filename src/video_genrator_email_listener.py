@@ -30,10 +30,7 @@ default_args = {
 VIDEO_COMPANION_FROM_ADDRESS = Variable.get("video.companion.from.address")
 GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
 LAST_PROCESSED_EMAIL_FILE = "/appz/cache/video_companion_last_processed_email.json"
-
-# Workspace configuration - similar to Cucumber approach
-VIDEO_WORKSPACES_BASE = "/appz/video_companion/workspaces"
-VIDEO_TEMPLATE_DIR = "/appz/video_companion/template"
+SHARED_IMAGES_DIR = "/appz/shared_images"
 
 def authenticate_gmail():
     """Authenticate Gmail API and verify correct email account."""
@@ -77,7 +74,7 @@ def create_workspace_for_thread(thread_id, email_id):
     """
     try:
         # Use thread_id directly as the workspace identifier
-        workspace_path = f'{VIDEO_WORKSPACES_BASE}/{thread_id}'
+        workspace_path = f'{SHARED_IMAGES_DIR}/{thread_id}'
         
         # Check if workspace already exists for this thread
         if os.path.exists(workspace_path):
@@ -89,31 +86,17 @@ def create_workspace_for_thread(thread_id, email_id):
             }
         
         # Create new workspace with thread_id as directory name
-        os.makedirs(VIDEO_WORKSPACES_BASE, exist_ok=True)
+        os.makedirs(SHARED_IMAGES_DIR, exist_ok=True)
         
         logging.info(f"Creating new workspace for thread: {thread_id}, email: {email_id}")
         logging.info(f"Workspace path: {workspace_path}")
         
-        # If you have a template directory, copy it; otherwise just create the directory
-        if os.path.exists(VIDEO_TEMPLATE_DIR):
-            logging.info(f"Copying from template {VIDEO_TEMPLATE_DIR} to {workspace_path}")
-            shutil.copytree(
-                VIDEO_TEMPLATE_DIR,
-                workspace_path,
-                dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns(
-                    '*.tmp',
-                    '.DS_Store',
-                    '__pycache__',
-                    '*.pyc'
-                )
-            )
-        else:
+       
             # Just create the directory structure
-            os.makedirs(workspace_path, exist_ok=True)
-            os.makedirs(f"{workspace_path}/images", exist_ok=True)
-            os.makedirs(f"{workspace_path}/videos", exist_ok=True)
-            logging.info(f"Created new workspace structure at {workspace_path}")
+        os.makedirs(workspace_path, exist_ok=True)
+        os.makedirs(f"{workspace_path}/input", exist_ok=True)
+        os.makedirs(f"{workspace_path}/output", exist_ok=True)
+        logging.info(f"Created new workspace structure at {workspace_path}")
         
         logging.info(f"New workspace created successfully for thread: {thread_id}")
         
