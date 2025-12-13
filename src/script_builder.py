@@ -863,7 +863,7 @@ def split_script_task(**context):
         ti.xcom_push(key="video_generation_success", value=False)
         return
     
-    logging.info(f"Triggering video generation DAG for thread {thread_id}")
+    # logging.info(f"Triggering video generation DAG for thread {thread_id}")
     
     # Step A: Clean Extraction
     draft_json = get_gemini_response(
@@ -1052,13 +1052,12 @@ def merge_videos_wrapper(**context):
     modified_context['params'] = merge_params
     
     # Call the merge function
-    # result = merge_videos_logic(**modified_context)
-    result = "/appz/home/airflow/dags/video_v1.mp4"
+    result = merge_videos_logic(**modified_context)
+    # result = "/appz/home/airflow/dags/video_v1.mp4"
     ti.xcom_push(key="generated_video_path", value=result)
     logging.info(f"✅ Merge complete! Output: {result}")
     
     return result
-
 
 def send_video_email(**kwargs):
     """Send generated video to user."""
@@ -1066,25 +1065,32 @@ def send_video_email(**kwargs):
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
-    email_data = conf.get("email_data", "")
-    message_id = conf.get("message_id", "")
+    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
-    if conf.get("trigger_source") == "agent":
-        return {"video_path":video_path}
+    
+    # Check if this is an agent trigger - if so, just return the path
+    if is_agent_trigger(conf):
+        logging.info("Agent trigger detected: Skipping video email.")
+        return {"video_path": video_path}
+    
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
+    
+    # Extract sender name
     sender_name = "there"
-    name_match = re.search(r'^([^<]+)', sender_email)
-    if name_match:
-        sender_name = name_match.group(1).strip()
+    if "<" in sender_email:
+        sender_name = sender_email.split("<")[0].strip()
+        sender_email = sender_email.split("<")[1].replace(">", "").strip()
+    else:
+        name_match = re.search(r'^([^<]+)', sender_email)
+        if name_match:
+            sender_name = name_match.group(1).strip()
     
     subject = headers.get("Subject", "Video Generation Request")
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
-    
-    # Get the email address to send FROM (your service account)
-    # You need to define this - either from config, environment variable, or Airflow Variable
-    from_email = sender_email# REPLACE THIS
     
     if video_path and os.path.exists(video_path):
         html_content = f"""
@@ -1150,21 +1156,57 @@ def send_video_email(**kwargs):
         
         service = authenticate_gmail()
         if service:
-            send_email(
-                service,
-                sender_email,    # Recipient email
-                subject, 
-                html_content, 
-                thread_headers=headers,
-                attachment_path=video_path,
-                attachment_name=os.path.basename(video_path)
-            )
-            mark_message_as_read(service, message_id)
-        logging.info("Sent video generation error email")
-        
-
-
-
+            try:
+                # Create message with video attachment
+                msg = MIMEMultipart()
+                msg["To"] = sender_email
+                msg["From"] = VIDEO_COMPANION_FROM_ADDRESS
+                msg["Subject"] = subject
+                
+                # Add threading headers
+                original_message_id = headers.get("Message-ID", "")
+                if original_message_id:
+                    msg["In-Reply-To"] = original_message_id
+                    msg["References"] = original_message_id
+                
+                # Attach HTML body
+                msg.attach(MIMEText(html_content, "html"))
+                
+                # Attach video file
+                with open(video_path, "rb") as f:
+                    video_attachment = MIMEBase("video", "mp4")
+                    video_attachment.set_payload(f.read())
+                    encoders.encode_base64(video_attachment)
+                    video_attachment.add_header(
+                        "Content-Disposition",
+                        f"attachment; filename={os.path.basename(video_path)}"
+                    )
+                    msg.attach(video_attachment)
+                
+                # Send with thread ID
+                raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+                body = {
+                    "raw": raw_message,
+                    "threadId": thread_id
+                }
+                
+                sent = service.users().messages().send(userId="me", body=body).execute()
+                logging.info(f"Video email sent successfully in thread {thread_id}, message ID: {sent['id']}")
+                
+                # Mark original message as read
+                if message_id:
+                    mark_message_as_read(service, message_id)
+                
+            except Exception as e:
+                logging.error(f"Failed to send video email: {e}", exc_info=True)
+                raise
+    else:
+        logging.error(f"Video file not found: {video_path}")
+        # Optionally send an error email here
+        raise FileNotFoundError(f"Generated video not found at {video_path}")
+    
+    logging.info(f"Video email sent to {sender_email}")
+    
 def send_error_email(**kwargs):
     """Send generic error email."""
     ti = kwargs['ti']
