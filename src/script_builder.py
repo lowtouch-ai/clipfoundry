@@ -637,162 +637,97 @@ _{data.get('visual_direction')}_
     }
 
 def generate_video(**kwargs):
-    """Generate video from images and script."""
+    """Generate video by triggering the video generation DAG."""
     ti = kwargs['ti']
+    dag_run = kwargs.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
     
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     images = ti.xcom_pull(key="images", task_ids="validate_input")
     thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
     
-    prompt = email_data.get("content", "").strip()
+    # Get the script - either generated or user-provided
+    generated_script_result = ti.xcom_pull(key="generated_script", task_ids="generate_script")
+    user_script = email_data.get("content", "").strip()
     
-    logging.info(f"Generating video for thread {thread_id}")
+    # Use generated script if available, otherwise use user's original prompt as script
+    final_script = generated_script_result if generated_script_result else user_script
     
-    # Get image paths from thread directory
-    thread_image_dir = os.path.join(SHARED_IMAGES_DIR, thread_id)
-    image_paths = [img["path"] for img in images if os.path.exists(img["path"])]
+    if not final_script:
+        logging.error("No script available for video generation")
+        ti.xcom_push(key="video_generation_error", value="No script available")
+        ti.xcom_push(key="video_generation_success", value=False)
+        return
+    
+    logging.info(f"Triggering video generation DAG for thread {thread_id}")
+    
+    # Get image paths
+    image_paths = [img["path"] for img in images if os.path.exists(img.get("path", ""))]
     
     if not image_paths:
         logging.error("No valid image paths found")
         ti.xcom_push(key="video_generation_error", value="No images available")
+        ti.xcom_push(key="video_generation_success", value=False)
         return
     
     logging.info(f"Using {len(image_paths)} images: {image_paths}")
     
-    # Create video output directory
-    os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
-    video_filename = f"video_{thread_id}_{int(datetime.now().timestamp())}.mp4"
-    video_path = os.path.join(VIDEO_OUTPUT_DIR, video_filename)
+    # Prepare configuration for video generation DAG
+    video_dag_config = {
+        "script_content": final_script,
+        "images": image_paths,
+        "aspect_ratio": prompt_analysis.get("aspect_ratio", "16:9"),
+        "resolution": prompt_analysis.get("resolution", "720p"),
+        "thread_id": thread_id,
+        "message_id": message_id,
+        # Email metadata for video DAG to send completion email
+        # "requester_email": email_data.get("headers", {}).get("From", ""),
+        # "original_subject": email_data.get("headers", {}).get("Subject", ""),
+        # "email_headers": email_data.get("headers", {}),
+        "email_data":email_data,
+        "triggered_by": "script_builder",
+        "trigger_source": "agent" if is_agent_trigger(conf) else "email"
+    }
     
     try:
-        # TODO: Implement actual video generation logic here
-        # This is a placeholder for the video generation process
-        # You would integrate with your video generation service/API
+        from airflow.api.common.trigger_dag import trigger_dag
         
-        # Placeholder: Create a dummy video file for testing
-        with open(video_path, "wb") as f:
-            f.write(b"PLACEHOLDER_VIDEO_DATA")
+        # Trigger the video generation and merge pipeline DAG
+        run_id = f"triggered_from_script_builder_{thread_id}_{int(datetime.now().timestamp())}"
         
-        logging.info(f"Video generated: {video_path}")
-        ti.xcom_push(key="generated_video_path", value=video_path)
+        trigger_dag(
+            dag_id="video_generation_and_merge_pipeline",
+            run_id=run_id,
+            conf=video_dag_config,
+            execution_date=None,
+            replace_microseconds=False
+        )
+        
+        logging.info(f"✅ Successfully triggered video generation DAG with run_id: {run_id}")
+        
+        # Store the run_id for tracking
+        ti.xcom_push(key="triggered_dag_run_id", value=run_id)
+        ti.xcom_push(key="video_generation_triggered", value=True)
         ti.xcom_push(key="video_generation_success", value=True)
         
+        # If this is an agent trigger, return info about the triggered DAG
+        if is_agent_trigger(conf):
+            return {
+                "status": "video_generation_triggered",
+                "dag_run_id": run_id,
+                "message": f"Video generation pipeline started. Track progress with run_id: {run_id}"
+            }
+        
     except Exception as e:
-        logging.error(f"Video generation failed: {e}", exc_info=True)
+        logging.error(f"Failed to trigger video generation DAG: {e}", exc_info=True)
         ti.xcom_push(key="video_generation_error", value=str(e))
         ti.xcom_push(key="video_generation_success", value=False)
+        raise
 
-def send_video_email(**kwargs):
-    """Send generated video to user in the same thread."""
-    ti = kwargs['ti']
-    dag_run = kwargs.get('dag_run')
-    
-    if is_agent_trigger(dag_run.conf):
-        logging.info("Agent trigger detected: Skipping video delivery email")
-        return
-    
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
-    video_path = ti.xcom_pull(key="generated_video_path", task_ids="generate_video")
-    video_success = ti.xcom_pull(key="video_generation_success", task_ids="generate_video")
-    
-    headers = email_data.get("headers", {})
-    sender_email = headers.get("From", "")
-    sender_name = "there"
-    name_match = re.search(r'^([^<]+)', sender_email)
-    if name_match:
-        sender_name = name_match.group(1).strip()
-    
-    subject = headers.get("Subject", "Video Generation Request")
-    if not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}"
 
-    original_message_id = headers.get("Message-ID", "")
 
-    service = authenticate_gmail()
-    if not service:
-        logging.error("Failed to authenticate Gmail for sending video")
-        return
-
-    if video_success and video_path and os.path.exists(video_path):
-        html_content = f"""
-<html>
-<head>
-    <style>
-        body {{font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;}}
-        .success-box {{background-color: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 20px 0;}}
-        .closing {{margin-top: 20px;}}
-        .signature {{margin-top: 20px; font-weight: bold;}}
-    </style>
-</head>
-<body>
-    <p>Hello {sender_name},</p>
-    <div class="success-box">
-        <strong>Video Generated Successfully!</strong>
-        <p>Your video has been created and is attached below.</p>
-    </div>
-    <p>Thank you for using Video Companion!</p>
-    <p>Best regards,<br>Video Companion Assistant</p>
-</body>
-</html>
-"""
-        # Use send_reply_to_thread but with attachment
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["To"] = sender_email
-            msg["From"] = VIDEO_COMPANION_FROM_ADDRESS
-            msg["Subject"] = subject
-            msg["In-Reply-To"] = original_message_id
-            msg["References"] = original_message_id
-
-            plain_text = re.sub(r"<[^>]+>", "", html_content)
-            msg.attach(MIMEText(plain_text, "plain"))
-            msg.attach(MIMEText(html_content, "html"))
-
-            # Attach video
-            with open(video_path, "rb") as f:
-                part = MIMEBase("video", "mp4")
-                part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition",
-                f"attachment; filename={os.path.basename(video_path)}"
-            )
-            msg.attach(part)
-
-            raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            body = {
-                "raw": raw_message,
-                "threadId": thread_id  # ← Critical: keeps it in same thread
-            }
-
-            sent = service.users().messages().send(userId="me", body=body).execute()
-            logging.info(f"Video sent in thread {thread_id}: {sent['id']}")
-
-        except Exception as e:
-            logging.error(f"Failed to send video: {e}", exc_info=True)
-
-    else:
-        # Send error (fallback)
-        html_content = f"""
-<html><body>
-    <p>Hello {sender_name},</p>
-    <p>Sorry, video generation failed. Please try again.</p>
-    <p>Best,<br>Video Companion</p>
-</body></html>
-"""
-        send_reply_to_thread(
-            service=service,
-            thread_id=thread_id,
-            message_id=original_message_id,
-            recipient=sender_email,
-            subject=subject,
-            reply_html_body=html_content
-        )
-
-    mark_message_as_read(service, message_id)
 
 def send_error_email(**kwargs):
     """Send generic error email."""
@@ -900,8 +835,8 @@ This DAG processes video generation requests from email.
 """
 
 with DAG(
-    "video_companion_processor",
-    description="video_companion_processor:v0.1",
+    "script_builder",
+    description="video_companion_processor:v0.3",
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
@@ -939,11 +874,7 @@ with DAG(
         provide_context=True
     )
 
-    send_video_email_task = PythonOperator(
-        task_id="send_video_email",
-        python_callable=send_video_email,
-        provide_context=True
-    )
+
 
     send_error_email_task = PythonOperator(
         task_id="send_error_email",
@@ -965,7 +896,7 @@ with DAG(
         send_error_email_task
     ]
     
-    generate_video_task >> send_video_email_task
+    generate_video_task >> end_task
     
     send_missing_elements_task >> end_task
     send_error_email_task >> end_task
