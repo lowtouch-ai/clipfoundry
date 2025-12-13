@@ -399,8 +399,7 @@ def send_video_email(**kwargs):
     email_data = conf.get("email_data", "")
     message_id = conf.get("message_id", "")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
-    if conf.trigger_source and conf.trigger_source=="agent":
-        ti.xcom_push(key="video_path", value=video_path)
+    if conf.get("trigger_source") == "agent":
         return {"video_path":video_path}
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
