@@ -26,7 +26,7 @@ from email_utils.email import (
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
-
+GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
