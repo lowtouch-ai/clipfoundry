@@ -88,6 +88,44 @@ def authenticate_gmail():
         logging.error(f"Gmail authentication failed: {e}")
         return None
 
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import base64
+
+def send_reply_to_thread(service, thread_id, message_id, recipient, subject, reply_html_body):
+    """
+    Send an HTML reply in the same Gmail thread.
+    This ensures all messages stay in the same thread → same workspace.
+    """
+    try:
+        # Create multipart message (plain + HTML)
+        msg = MIMEMultipart("alternative")
+        msg["To"] = recipient
+        msg["From"] = VIDEO_COMPANION_FROM_ADDRESS
+        msg["Subject"] = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+        msg["In-Reply-To"] = message_id
+        msg["References"] = message_id  # Helps threading
+
+        # Plain text fallback
+        plain_text = re.sub(r"<[^>]+>", "", reply_html_body)
+        msg.attach(MIMEText(plain_text, "plain"))
+        msg.attach(MIMEText(reply_html_body, "html"))
+
+        # Encode and send with threadId
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        body = {
+            "raw": raw_message,
+            "threadId": thread_id  # ← THIS KEEPS IT IN THE SAME THREAD
+        }
+
+        sent = service.users().messages().send(userId="me", body=body).execute()
+        logging.info(f"Reply sent successfully in thread {thread_id}, message ID: {sent['id']}")
+        return sent
+
+    except Exception as e:
+        logging.error(f"Failed to send reply in thread {thread_id}: {e}", exc_info=True)
+        raise
+
 def get_gemini_response(
     prompt: str,
     system_instruction: str | None = None,
@@ -169,41 +207,6 @@ def extract_json_from_text(text):
     except Exception as e:
         logging.error(f"JSON extraction error: {e}")
         return None
-
-def send_email(service, recipient_email, subject, html_content, thread_headers=None, attachment_path=None, attachment_name=None):
-    """Send email with optional attachment."""
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = f"Video Companion <{VIDEO_COMPANION_FROM_ADDRESS}>"
-        msg["To"] = recipient_email
-        msg["Subject"] = subject
-        
-        if thread_headers:
-            original_message_id = thread_headers.get("Message-ID", "")
-            if original_message_id:
-                msg["In-Reply-To"] = original_message_id
-                references = thread_headers.get("References", "")
-                msg["References"] = f"{references} {original_message_id}".strip() if references else original_message_id
-        
-        msg.attach(MIMEText(html_content, "html"))
-        
-        if attachment_path and os.path.exists(attachment_path):
-            with open(attachment_path, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f"attachment; filename={attachment_name or os.path.basename(attachment_path)}")
-            msg.attach(part)
-            logging.info(f"Attached file: {attachment_name}")
-        
-        raw = base64.urlsafe_b64encode(msg.as_string().encode()).decode()
-        result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
-        
-        logging.info(f"Email sent successfully: {result.get('id')}")
-        return True
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}", exc_info=True)
-        return False
 
 def mark_message_as_read(service, message_id):
     """Mark email as read."""
@@ -471,7 +474,17 @@ def send_missing_elements_email(**kwargs):
     if sender_email and "@" in sender_email:
         service = authenticate_gmail()
         if service:
-            send_email(service, sender_email, subject, html_content, thread_headers=headers)
+            thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+            original_message_id = headers.get("Message-ID", "")
+
+            send_reply_to_thread(
+                service=service,
+                thread_id=thread_id,
+                message_id=original_message_id,
+                recipient=sender_email,
+                subject=subject,
+                reply_html_body=html_content
+            )
             
             # 4. Mark Read (ONLY if we have a valid Message ID)
             if message_id:
@@ -480,116 +493,6 @@ def send_missing_elements_email(**kwargs):
             logging.info(f"Sent missing elements email to {sender_email}")
     else:
         logging.info("No valid recipient email found. Skipping email send.")
-
-def send_unclear_idea_email(**kwargs):
-    """Send email about unclear idea."""
-    ti = kwargs['ti']
-    
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
-    
-    headers = email_data.get("headers", {})
-    sender_email = headers.get("From", "")
-    sender_name = "there"
-    name_match = re.search(r'^([^<]+)', sender_email)
-    if name_match:
-        sender_name = name_match.group(1).strip()
-    
-    subject = headers.get("Subject", "Video Generation Request")
-    if not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}"
-    
-    html_content = f"""
-<html>
-<head>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .greeting {{
-            margin-bottom: 15px;
-        }}
-        .message {{
-            margin: 15px 0;
-        }}
-        .issue-box {{
-            background-color: #fff3cd;
-            border-left: 4px solid #ffc107;
-            padding: 15px;
-            margin: 20px 0;
-        }}
-        .examples {{
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
-        }}
-        .closing {{
-            margin-top: 20px;
-        }}
-        .signature {{
-            margin-top: 20px;
-            font-weight: bold;
-        }}
-    </style>
-</head>
-<body>
-    <div class="greeting">
-        <p>Hello {sender_name},</p>
-    </div>
-    
-    <div class="message">
-        <p>Thank you for providing the images and your request. However, I need more clarity about what kind of video you'd like me to create.</p>
-    </div>
-    
-    <div class="issue-box">
-        <strong>Issue:</strong>
-        <p>Your prompt doesn't clearly specify the type of video or the goal you want to achieve.</p>
-    </div>
-    
-    <div class="examples">
-        <strong>Examples of Clear Ideas:</strong>
-        <ul>
-            <li>"Create a professional talking head video where I introduce our new product"</li>
-            <li>"Make a video of me explaining the benefits of our service as a testimonial"</li>
-            <li>"Generate a video where I'm presenting the quarterly sales results"</li>
-            <li>"Create a video tutorial where I explain how to use our software"</li>
-        </ul>
-    </div>
-    
-    <div class="message">
-        <p>Please reply with a clearer description of:</p>
-        <ul>
-            <li>What type of video you want (talking head, presentation, tutorial, etc.)</li>
-            <li>What the purpose or goal of the video is</li>
-            <li>The context or setting you envision</li>
-        </ul>
-    </div>
-    
-    <div class="closing">
-        <p>Once I understand your vision better, I can either generate a script for you or proceed with your existing content.</p>
-    </div>
-    
-    <div class="signature">
-        <p>Best regards,<br>
-        Video Companion Assistant</p>
-    </div>
-</body>
-</html>
-"""
-    
-    service = authenticate_gmail()
-    if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
-        mark_message_as_read(service, message_id)
-    
-    logging.info("Sent unclear idea email")
 
 def generate_script(**kwargs):
     """Generate video script based on user's idea."""
@@ -718,7 +621,17 @@ _{data.get('visual_direction')}_
             service = authenticate_gmail()
             if service:
                 body = f"<html><body><p>Hello {sender_name},</p><p>Script draft:</p>{email_html}</body></html>"
-                send_email(service, sender_email_addr, subject, body, thread_headers=headers)
+                thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+                original_message_id = headers.get("Message-ID", "")
+
+                send_reply_to_thread(
+                    service=service,
+                    thread_id=thread_id,
+                    message_id=original_message_id,
+                    recipient=sender_email,
+                    subject=subject,
+                    reply_html_body=body
+                )
                 mark_message_as_read(service, message_id)
                 logging.info(f"Script approval email sent to {sender_email_addr}")
     else:
@@ -897,12 +810,60 @@ def split_script_task(**context):
     # This line is problematic - it tries to check if generate_script (which could be a dict) equals string content
     text = email_data.get("content", "").strip()
     logging.info(f"{generate_script}, {text}")
-    script_content = generate_script if generate_script is not None else email_data.get("content", "").strip()
+    
+    
+
+    logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
+    # Get the script - either generated or user-provided
+   
+
+    # 1. First, check if a script was generated in *this current run* (Script Generation Task)
+    final_script = ti.xcom_pull(key="generated_script", task_ids="generate_script")
+    
+    # 2. If not, look into Chat History (for the MVP "Reply to proceed" flow)
+    if not final_script:
+        chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input") or []
+        
+        # Iterate backwards to find the latest Assistant message
+        for msg in reversed(chat_history):
+            if msg.get("role") == "assistant":
+                raw_content = msg.get("content", "")
+                
+                # MVP CLEANUP: 
+                # We simply split the string to get text between "📝 Script" and "🎨 Visuals"
+                # This prevents the avatar from reading the metadata or visual instructions.
+                if "📝 Script" in raw_content and "🎨 Visuals" in raw_content:
+                    try:
+                        # Split by Script header and take the second part
+                        part_after_header = raw_content.split("📝 Script")[1]
+                        # Split by Visuals header and take the first part
+                        clean_script = part_after_header.split("🎨 Visuals")[0]
+                        final_script = clean_script.strip()
+                    except Exception as e:
+                        logging.warning(f"Simple split failed, using raw content: {e}")
+                        final_script = raw_content
+                else:
+                    # If headers are missing, fallback to the full message
+                    final_script = raw_content
+                
+                logging.info(f"Recovered script from history (len={len(final_script)})")
+                break
+
+    # 3. Last Resort: User Input (Fallback if history is empty)
+    if not final_script:
+        final_script = email_data.get("content", "").strip()
+
+    script_content = generate_script if generate_script is not None else final_script
     if not script_content or script_content == "Paste your full script here...":
         logging.error("❌ No script content provided.")
         return []
-
-    logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
+    if not script_content:
+        logging.error("No script available for video generation")
+        ti.xcom_push(key="video_generation_error", value="No script available")
+        ti.xcom_push(key="video_generation_success", value=False)
+        return
+    
+    logging.info(f"Triggering video generation DAG for thread {thread_id}")
     
     # Step A: Clean Extraction
     draft_json = get_gemini_response(
@@ -1338,7 +1299,7 @@ with DAG(
     )
 
     send_unclear_idea_task = PythonOperator(
-        task_id="send_unclear_idea_email",
+   `     task_id="send_unclear_idea_email",
         python_callable=send_unclear_idea_email,
         provide_context=True
     )
@@ -1411,7 +1372,6 @@ with DAG(
 
     # From validate_prompt_clarity, branch to different paths
     validate_prompt_clarity_task >> [
-        send_unclear_idea_task,
         generate_script_task,
         split_script,  # Direct path when script provided
         send_error_email_task
@@ -1426,5 +1386,4 @@ with DAG(
 
     # Error/completion paths
     send_missing_elements_task >> end_task
-    send_unclear_idea_task >> end_task
     send_error_email_task >> end_task
