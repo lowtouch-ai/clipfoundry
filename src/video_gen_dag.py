@@ -587,7 +587,7 @@ task1 = PythonOperator(
     dag=dag,
 )
 
-task2 = PythonOperator(
+split_script = PythonOperator(
     task_id='split_script',
     python_callable=split_script_task,
     dag=dag,
@@ -629,4 +629,4 @@ send_video_email = PythonOperator(
 
 # Set dependencies - this is the key part!
 # task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
-task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task >> send_video_email
+split_script >> task3 >> process_segments >> collect_task >> merge_task >> send_video_email
