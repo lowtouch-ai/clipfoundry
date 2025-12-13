@@ -56,18 +56,17 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[]):
         # Clean text
         text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', text, flags=re.IGNORECASE).strip()
         
-        # Validate/Clamp Duration (Trust but verify)
+        # Validate/Clamp Duration
         final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
         # Pick ONE random image
         selected_image = random.choice(image_list) if image_list else None
-        logger.info(f"Images: {image_list}")
+        
         config_item = {
             "image_path": selected_image,
             "prompt": text,
             "duration": final_duration,
             "aspect_ratio": aspect_ratio
         }
-        # logger.info(config_item)
         final_config.append(config_item)
 
     return final_config
@@ -78,20 +77,15 @@ def get_config(**context):
     ti = context['ti']
     config = {
         'images': context['params']['images'],
-        # 'prompt': context['params']['prompt'],
-        # 'resolution': context['params']['resolution'],
-        # 'duration': context['params']['duration'],
-        # 'aspect_ratio': context['params']['aspect_ratio'],
-        # 'video_model': Variable.get('CF_VIDEO_MODEL', default_var='mock'),
         "status": "draft",
         'video_meta': {
-                "aspect_ratio": "16:9",
-                "target_duration": 25
-                        },
-        "script_content":  context['params']['script_content'],
+            "aspect_ratio": "16:9",
+            "target_duration": 25
+        },
+        "script_content": context['params']['script_content'],
     }
     ti.xcom_push(key='config', value=config)
-    images_list =  ["/appz/home/airflow/dags/image.png"]
+    images_list = ["/appz/home/airflow/dags/image.png"]
     ti.xcom_push(key='images', value=images_list)
     
     logger.info(f"Pushed config to XCom: {config}")
@@ -108,19 +102,15 @@ def extract_json_from_text(text):
     """
     try:
         text = text.strip()
-        
-        # Remove markdown code blocks
         text = re.sub(r'```json\s*', '', text)
         text = re.sub(r'```\s*', '', text)
         text = text.strip()
         
-        # Try direct JSON parsing first (most efficient)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
         
-        # Try to find JSON object {}
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             try:
@@ -128,7 +118,6 @@ def extract_json_from_text(text):
             except json.JSONDecodeError:
                 pass
         
-        # Try to find JSON array []
         match = re.search(r'\[.*\]', text, re.DOTALL)
         if match:
             try:
@@ -145,114 +134,114 @@ def extract_json_from_text(text):
     
 def split_script_task(**context):
         
-        ti = context['ti']
-        # --- PROMPTS ---
-        SYSTEM_PROMPT_EXTRACTOR = """
-        You are a Script Extraction Specialist.
-        Your input includes conversation, sound effects, script lines, and reasoning.
-        TASK:
-        - Extract ONLY the spoken words (Narration/Dialog).
-        - IGNORE "Reasoning for changes", sound effects, and labels.
-        - Return JSON: { "draft_segments": ["line 1", "line 2"] }
-        """
-
-        SYSTEM_PROMPT_FORMATTER = """
-        You are a Video Pacing Expert.
-        Refine segments for TTS (Text-to-Speech).
-        
-        CRITICAL RULES:
-        1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
-        2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
-        3. **ASSIGN DURATION**: For each segment, you must assign a specific duration in seconds.
-        - **MINIMUM**: 6 seconds
-        - **MAXIMUM**: 8 seconds
-        - Logic: Use 6s for shorter punchy lines, 8s for longer descriptive lines.
-        - RULE: Do not use fractions only give 6 or 8 seconds as input.
-        4. **PAD IF NEEDED**: If a segment cannot be merged, slightly rewrite it to be more descriptive to increase duration.
-        * Input: "Mars Horizon."
-        * Output: "Witness the revelation of the red planet in Mars Horizon."
-        5. **NATURAL FLOW**: Group short, dramatic phrases together.
-        * BAD: ["Until now.", "An anomaly."]
-        * GOOD: ["Until now, an anomaly waits beneath the sands."]
-        6. **OUTPUT FORMAT**: Return a JSON list of objects.
-        Example:
-        [
-            { "text": "Until now, a strange ancient anomaly waits beneath.", "duration": 6 },
-            { "text": "Witness the revelation of the red planet.", "duration": 6 }
-        ]
-        """
-
-        # --- INPUT HANDLING ---
-        
-        raw_data = ti.xcom_pull(key='config', task_ids='get_config')
-        images = ti.xcom_pull(key='images', task_ids='get_config')
-        logger.info
-        script_content = raw_data.get('script_content')
-        
-        # Extract Aspect Ratio (Default to 16:9 if missing)
-        video_meta = raw_data.get('video_meta', {})
-        aspect_ratio = video_meta.get('aspect_ratio', '16:9')
-
-        if not script_content or script_content == "Paste your full script here...":
-            logger.error("❌ No script content provided.")
-            return [] # Return empty list on error for consistent type
-
-        logger.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
-
-        # --- EXECUTION ---
-        
-        # Step A: Clean Extraction
-        draft_json = get_gemini_response(
-            prompt=f"Extract spoken lines from:\n{script_content}",
-            system_instruction=SYSTEM_PROMPT_EXTRACTOR,
-            temperature=0.2,
-            api_key=GEMINI_API_KEY
-        )
-        
-        try:
-            logger.info(f"Initial Draft : {draft_json}")
-            draft_data = extract_json_from_text(draft_json)
-            draft_segments = draft_data.get("draft_segments", draft_data)
-            if not isinstance(draft_segments, list):
-                draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
-        except:
-            logger.error("Failed extraction step")
-            return []
-
-        if not draft_segments:
-            logger.error("No script lines found")
-            return []
-
-        # Step B: Pacing
-        final_json = get_gemini_response(
-            prompt=f"Optimize these lines for natural video flow (merge short phrases):\n{json.dumps(draft_segments)}",
-            system_instruction=SYSTEM_PROMPT_FORMATTER,
-            temperature=0.3, 
-            api_key=GEMINI_API_KEY
-        )
-        logger.info(f"FINAL:: {final_json}")
-        try:
-            final_data = extract_json_from_text(final_json)
-            final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
-            logger.info(f"Final Data {final_data} ")
-            # --- FINAL STEP: BUILD CONFIG OBJECT ---
-            segments_for_processing = build_scene_config(segments_data=final_segments, aspect_ratio=aspect_ratio,images=images)
-            # logger.info(f"segments: {segments_for_processing} ")
-            ti.xcom_push(key="segments",value=segments_for_processing)
-            return segments_for_processing
-
-        except Exception as e:
-            logger.error(f"Failed pacing step: {e}")
-            return []
-
-from airflow.operators.python import PythonOperator
-from airflow.models.baseoperator import chain
-
-# Modify process_config to accept a single segment
-def process_single_segment(segment, **context):
-    """Process ONE segment at a time."""
     ti = context['ti']
-    logger.info(f"Processing segment: {segment}")
+    # --- PROMPTS ---
+    SYSTEM_PROMPT_EXTRACTOR = """
+    You are a Script Extraction Specialist.
+    Your input includes conversation, sound effects, script lines, and reasoning.
+    TASK:
+    - Extract ONLY the spoken words (Narration/Dialog).
+    - IGNORE "Reasoning for changes", sound effects, and labels.
+    - Return JSON: { "draft_segments": ["line 1", "line 2"] }
+    """
+
+    SYSTEM_PROMPT_FORMATTER = """
+    You are a Video Pacing Expert.
+    Refine segments for TTS (Text-to-Speech).
+    
+    CRITICAL RULES:
+    1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
+    2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
+    3. **ASSIGN DURATION**: For each segment, you must assign a specific duration in seconds.
+    - **MINIMUM**: 6 seconds
+    - **MAXIMUM**: 8 seconds
+    - Logic: Use 6s for shorter punchy lines, 8s for longer descriptive lines.
+    - RULE: Do not use fractions only give 6 or 8 seconds as input.
+    4. **PAD IF NEEDED**: If a segment cannot be merged, slightly rewrite it to be more descriptive to increase duration.
+    * Input: "Mars Horizon."
+    * Output: "Witness the revelation of the red planet in Mars Horizon."
+    5. **NATURAL FLOW**: Group short, dramatic phrases together.
+    * BAD: ["Until now.", "An anomaly."]
+    * GOOD: ["Until now, an anomaly waits beneath the sands."]
+    6. **OUTPUT FORMAT**: Return a JSON list of objects.
+    Example:
+    [
+        { "text": "Until now, a strange ancient anomaly waits beneath.", "duration": 6 },
+        { "text": "Witness the revelation of the red planet.", "duration": 6 }
+    ]
+    """
+
+    # --- INPUT HANDLING ---
+    
+    raw_data = ti.xcom_pull(key='config', task_ids='get_config')
+    images = ti.xcom_pull(key='images', task_ids='get_config')
+    logger.info
+    script_content = raw_data.get('script_content')
+    
+    # Extract Aspect Ratio (Default to 16:9 if missing)
+    video_meta = raw_data.get('video_meta', {})
+    aspect_ratio = video_meta.get('aspect_ratio', '16:9')
+
+    if not script_content or script_content == "Paste your full script here...":
+        logger.error("❌ No script content provided.")
+        return []
+
+    logger.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
+    
+    # Step A: Clean Extraction
+    draft_json = get_gemini_response(
+        prompt=f"Extract spoken lines from:\n{script_content}",
+        system_instruction=SYSTEM_PROMPT_EXTRACTOR,
+        temperature=0.2,
+        api_key=GEMINI_API_KEY
+    )
+    
+    try:
+        logger.info(f"Initial Draft : {draft_json}")
+        draft_data = extract_json_from_text(draft_json)
+        draft_segments = draft_data.get("draft_segments", draft_data)
+        if not isinstance(draft_segments, list):
+            draft_segments = list(draft_data.values())[0] if isinstance(draft_data, dict) else []
+    except:
+        logger.error("Failed extraction step")
+        return []
+
+    if not draft_segments:
+        logger.error("No script lines found")
+        return []
+
+    # Step B: Pacing
+    final_json = get_gemini_response(
+        prompt=f"Optimize these lines for natural video flow:\n{json.dumps(draft_segments)}",
+        system_instruction=SYSTEM_PROMPT_FORMATTER,
+        temperature=0.3, 
+        api_key=GEMINI_API_KEY
+    )
+    
+    try:
+        final_data = extract_json_from_text(final_json)
+        final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
+        
+        segments_for_processing = build_scene_config(
+            segments_data=final_segments, 
+            aspect_ratio=aspect_ratio, 
+            images=images
+        )
+        
+        ti.xcom_push(key="segments", value=segments_for_processing)
+        return segments_for_processing
+
+    except Exception as e:
+        logger.error(f"Failed pacing step: {e}")
+        return []
+
+def process_single_segment(segment, segment_index, **context):
+    """
+    Process ONE segment at a time.
+    CRITICAL: segment_index preserves the ORDER of video generation.
+    """
+    ti = context['ti']
+    logger.info(f"Processing segment {segment_index}: {segment}")
     
     video_model = Variable.get('CF_video_model', default_var='mock')
     
@@ -260,11 +249,15 @@ def process_single_segment(segment, **context):
         mock_list_raw = Variable.get('mock_list', default_var='[]')
         mock_list = json.loads(mock_list_raw) if mock_list_raw else []
         video_path = random.choice(mock_list) if mock_list else None
-        logger.info(f"Mock video: {video_path}")
-        return video_path
+        logger.info(f"Mock video {segment_index}: {video_path}")
+        
+        # Return dict with index to preserve order
+        return {
+            'index': segment_index,
+            'video_path': video_path
+        }
     else:
-        # Real Veo generation
-        logger.info("Using Google Veo 3.0")
+        logger.info(f"Using Google Veo 3.0 for segment {segment_index}")
         try:
             veo_tool = GoogleVeoVideoTool(api_key=GEMINI_API_KEY)
             
@@ -278,17 +271,20 @@ def process_single_segment(segment, **context):
             
             if result.get('success'):
                 video_path = result['video_paths'][0]
-                logger.info(f"✅ Generated: {video_path}")
-                return video_path
+                logger.info(f"✅ Generated segment {segment_index}: {video_path}")
+                
+                return {
+                    'index': segment_index,
+                    'video_path': video_path
+                }
             else:
                 raise ValueError(f"Generation failed: {result.get('error')}")
         except Exception as e:
-            logger.error(f"Exception: {str(e)}")
+            logger.error(f"Exception in segment {segment_index}: {str(e)}")
             raise
 
-# Add a helper task to prepare expand data
 def prepare_segments_for_expand(**context):
-    """Convert segments list into format needed for expand."""
+    """Convert segments list into format needed for expand with index tracking."""
     ti = context['ti']
     segments = ti.xcom_pull(task_ids='split_script', key='segments')
     
@@ -296,32 +292,117 @@ def prepare_segments_for_expand(**context):
         logger.warning("No segments found!")
         return []
     
-    # Return list of dicts for expand
-    return [{'segment': seg} for seg in segments]
+    # Return list of dicts with both segment and index for ordering
+    return [
+        {
+            'segment': seg,
+            'segment_index': idx
+        } 
+        for idx, seg in enumerate(segments)
+    ]
+
+def collect_and_merge_videos(**context):
+    """
+    Collects all generated videos in correct order and triggers merge.
+    This task runs AFTER all process_segment tasks complete.
+    """
+    ti = context['ti']
+    
+    # Get all results from the mapped tasks
+    # Note: When using expand(), results are returned as a list
+    segment_results = ti.xcom_pull(task_ids='process_segment')
+    
+    if not segment_results:
+        logger.error("❌ No video segments were generated!")
+        raise ValueError("No videos to merge")
+    
+    logger.info(f"📦 Collected {len(segment_results)} video results")
+    
+    # Sort by index to maintain correct order
+    sorted_results = sorted(segment_results, key=lambda x: x['index'])
+    
+    # Extract video paths in order
+    video_paths = [result['video_path'] for result in sorted_results]
+    
+    logger.info(f"📹 Video paths in order: {video_paths}")
+    
+    # Validate all videos exist
+    valid_paths = [p for p in video_paths if p and Path(p).exists()]
+    
+    if len(valid_paths) < len(video_paths):
+        logger.warning(f"⚠️ Some videos are missing. Expected {len(video_paths)}, found {len(valid_paths)}")
+    
+    if len(valid_paths) < 2:
+        logger.error("❌ Need at least 2 videos to merge")
+        raise ValueError("Insufficient videos for merge")
+    
+    # Generate request ID for merge
+    req_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    # Push to XCom for merge task
+    merge_params = {
+        'video_paths': valid_paths,
+        'req_id': req_id
+    }
+    
+    ti.xcom_push(key='merge_params', value=merge_params)
+    
+    logger.info(f"✅ Ready to merge {len(valid_paths)} videos with req_id: {req_id}")
+    
+    return merge_params
+
+def merge_videos_wrapper(**context):
+    """
+    Wrapper to call the existing merge logic from video_merger_pipeline.
+    """
+    ti = context['ti']
+    
+    # Get merge parameters
+    merge_params = ti.xcom_pull(task_ids='collect_videos', key='merge_params')
+    
+    if not merge_params:
+        raise ValueError("No merge parameters found")
+    
+    logger.info(f"🎬 Starting merge with params: {merge_params}")
+    
+    # Import the merge logic from the other DAG
+    # You might need to adjust the import path based on your structure
+    from ffmpg_merger import merge_videos_logic
+    
+    # Create a modified context with params
+    modified_context = context.copy()
+    modified_context['params'] = merge_params
+    
+    # Call the merge function
+    result = merge_videos_logic(**modified_context)
+    
+    logger.info(f"✅ Merge complete! Output: {result}")
+    
+    return result
+
+# Main DAG definition
 dag = DAG(
-    'sample_config_dag',
+    'video_generation_and_merge_pipeline',
     default_args=default_args,
-    description='Sample Airflow DAG with config params, XCom, and Airflow Variable',
+    description='Complete pipeline: Generate multiple videos and merge them',
     schedule_interval=None,
     catchup=False,
     params={
-       "images": Param(
-            default=[],                                   # default: empty list
-            type="array",                                 # ← correct Airflow type
-            items={"type": "string"},                     # ← each item is a string (file path)
-            minItems=1,                                   # optional: require at least one
+        "images": Param(
+            default=[],
+            type="array",
+            items={"type": "string"},
+            minItems=1,
             title="Input Images",
             description="Upload one or more images",
         ),
-        # 'prompt': Param('', type='string', description='Text prompt for processing'),
-        # 'resolution': Param('', type='string', description='Output resolution (e.g., 1024x1024)'),
-        # 'duration': Param(0, type='integer', description='Duration in seconds'),
-        'aspect_ratio': Param('', type='string', description='Aspect ratio (e.g., 16:9)'),
-        "script_content":  Param('', type='string', description='Text prompt for processing'),
+        'aspect_ratio': Param('16:9', type='string', description='Aspect ratio (e.g., 16:9)'),
+        "script_content": Param('', type='string', description='Full script content for video generation'),
     },
-    tags=['sample', 'config', 'xcom', 'variable'],
+    tags=['video', 'generation', 'merge', 'pipeline'],
 )
-# Update your DAG tasks
+
+# Define all tasks
 task1 = PythonOperator(
     task_id='get_config',
     python_callable=get_config,
@@ -340,7 +421,7 @@ task3 = PythonOperator(
     dag=dag,
 )
 
-# Dynamic mapping - this creates N tasks
+# Dynamic mapping - creates N parallel video generation tasks
 process_segments = PythonOperator.partial(
     task_id='process_segment',
     python_callable=process_single_segment,
@@ -348,5 +429,20 @@ process_segments = PythonOperator.partial(
     pool="video_processing_pool"
 ).expand(op_kwargs=task3.output)
 
-# Set dependencies
-task1 >> task2 >> task3 >> process_segments
+# Collect all videos in correct order
+collect_task = PythonOperator(
+    task_id='collect_videos',
+    python_callable=collect_and_merge_videos,
+    dag=dag,
+)
+
+# Final merge task
+merge_task = PythonOperator(
+    task_id='merge_all_videos',
+    python_callable=merge_videos_wrapper,
+    dag=dag,
+)
+
+# Set dependencies - this is the key part!
+# task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
+task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
