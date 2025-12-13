@@ -466,7 +466,7 @@ def trigger_video_processor(**kwargs):
         
         trigger_task = TriggerDagRunOperator(
             task_id=task_id,
-            trigger_dag_id="video_companion_processor",
+            trigger_dag_id="script_builder",
             conf=trigger_conf,
         )
         trigger_task.execute(context=kwargs)

@@ -10,11 +10,18 @@ from pathlib import Path
 import sys
 import re   
 
+
 # Add the parent directory to Python path
 dag_dir = Path(__file__).parent
 sys.path.insert(0, str(dag_dir))
 from agent.veo import GoogleVeoVideoTool
 from models.gemini import get_gemini_response
+# Import email utilities
+from email_utils.email import (
+    authenticate_gmail,
+    send_email,
+    mark_message_as_read
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +82,19 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[]):
 def get_config(**context):
     """Task 1: Retrieve params and push to XCom."""
     ti = context['ti']
+    
+    dag_run = context.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
     config = {
-        'images': context['params']['images'],
-        "status": "draft",
+        'images': conf.get("images", {}),
         'video_meta': {
-            "aspect_ratio": "16:9",
-            "target_duration": 25
+            "aspect_ratio": conf.get("aspect_ratio", "16:9"),
+            "resolution": conf.get("resolution", "720p"),
         },
-        "script_content": context['params']['script_content'],
+        "script_content": conf.get("script_content", ""),
     }
     ti.xcom_push(key='config', value=config)
-    images_list = ["/appz/home/airflow/dags/image.png"]
+    images_list = conf.get("images", {})
     ti.xcom_push(key='images', value=images_list)
     
     logger.info(f"Pushed config to XCom: {config}")
@@ -374,11 +383,177 @@ def merge_videos_wrapper(**context):
     
     # Call the merge function
     result = merge_videos_logic(**modified_context)
-    
+    ti.xcom_push(key="generated_video_path", value=result)
     logger.info(f"✅ Merge complete! Output: {result}")
     
     return result
 
+
+def send_video_email(**kwargs):
+    """Send generated video to user."""
+    ti = kwargs['ti']
+    dag_run = kwargs.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
+    
+    email_data = conf.get("email_data", "")
+    message_id = conf.get("message_id", "")
+    video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
+    # video_success = ti.xcom_pull(key="video_generation_status", task_ids="merge_all_videos")
+    
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+    sender_name = "there"
+    name_match = re.search(r'^([^<]+)', sender_email)
+    if name_match:
+        sender_name = name_match.group(1).strip()
+    
+    subject = headers.get("Subject", "Video Generation Request")
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    
+    if video_path and os.path.exists(video_path):
+        html_content = f"""
+<html>
+<head>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .greeting {{
+            margin-bottom: 15px;
+        }}
+        .message {{
+            margin: 15px 0;
+        }}
+        .success-box {{
+            background-color: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 20px 0;
+        }}
+        .closing {{
+            margin-top: 20px;
+        }}
+        .signature {{
+            margin-top: 20px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="greeting">
+        <p>Hello {sender_name},</p>
+    </div>
+    
+    <div class="success-box">
+        <strong>Video Generated Successfully!</strong>
+        <p>Your video has been created and is attached to this email.</p>
+    </div>
+    
+    <div class="message">
+        <p>Please find your generated video attached. The video was created using the images and script/prompt you provided.</p>
+        
+        <p>If you need any modifications or want to generate another video, feel free to start a new request or reply to this email.</p>
+    </div>
+    
+    <div class="closing">
+        <p>Thank you for using Video Companion!</p>
+    </div>
+    
+    <div class="signature">
+        <p>Best regards,<br>
+        Video Companion Assistant</p>
+    </div>
+</body>
+</html>
+"""
+        
+        service = authenticate_gmail(GMAIL_CREDENTIALS)
+        if service:
+            send_email(
+                service, 
+                sender_email, 
+                subject, 
+                html_content, 
+                thread_headers=headers,
+                attachment_path=video_path,
+                attachment_name=os.path.basename(video_path)
+            )
+            mark_message_as_read(service, message_id)
+        
+        logging.info("Sent video email with attachment")
+    else:
+        # Send error email
+        html_content = f"""
+<html>
+<head>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .greeting {{
+            margin-bottom: 15px;
+        }}
+        .message {{
+            margin: 15px 0;
+        }}
+        .error-box {{
+            background-color: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            margin: 20px 0;
+        }}
+        .closing {{
+            margin-top: 20px;
+        }}
+        .signature {{
+            margin-top: 20px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="greeting">
+        <p>Hello {sender_name},</p>
+    </div>
+    
+    <div class="error-box">
+        <strong>Video Generation Issue</strong>
+        <p>We encountered an issue while generating your video. Our technical team has been notified.</p>
+    </div>
+    
+    <div class="message">
+        <p>We apologize for the inconvenience. Please try again later, or contact support if the issue persists.</p>
+    </div>
+    
+    <div class="closing">
+        <p>We'll work to resolve this as soon as possible.</p>
+    </div>
+    
+    <div class="signature">
+        <p>Best regards,<br>
+        Video Companion Assistant</p>
+    </div>
+</body>
+</html>
+"""
+        
+        service = authenticate_gmail()
+        if service:
+            send_email(service, sender_email, subject, html_content, thread_headers=headers)
+            mark_message_as_read(service, message_id)
+        
+        logging.info("Sent video generation error email")
 # Main DAG definition
 dag = DAG(
     'video_generation_and_merge_pipeline',
@@ -386,18 +561,6 @@ dag = DAG(
     description='Complete pipeline: Generate multiple videos and merge them',
     schedule_interval=None,
     catchup=False,
-    params={
-        "images": Param(
-            default=[],
-            type="array",
-            items={"type": "string"},
-            minItems=1,
-            title="Input Images",
-            description="Upload one or more images",
-        ),
-        'aspect_ratio': Param('16:9', type='string', description='Aspect ratio (e.g., 16:9)'),
-        "script_content": Param('', type='string', description='Full script content for video generation'),
-    },
     tags=['video', 'generation', 'merge', 'pipeline'],
 )
 
@@ -441,7 +604,13 @@ merge_task = PythonOperator(
     python_callable=merge_videos_wrapper,
     dag=dag,
 )
+# Final merge task
+send_video_email = PythonOperator(
+    task_id='send_video_email',
+    python_callable=send_video_email,
+    dag=dag,
+)
 
 # Set dependencies - this is the key part!
 # task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
-task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
+task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task >> send_video_email
