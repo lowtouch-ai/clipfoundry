@@ -247,7 +247,8 @@ def process_single_segment(segment, segment_index, **context):
     if video_model == 'mock':
         mock_list_raw = Variable.get('mock_list', default_var='[]')
         mock_list = json.loads(mock_list_raw) if mock_list_raw else []
-        video_path = random.choice(mock_list) if mock_list else None
+        path_index = segment_index % len(mock_list)
+        video_path = mock_list[path_index]
         logger.info(f"Mock video {segment_index}: {video_path}")
         
         # Return dict with index to preserve order
