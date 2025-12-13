@@ -740,28 +740,41 @@ def generate_video(**kwargs):
     # Get the script - either generated or user-provided
     generated_script_result = ti.xcom_pull(key="generated_script", task_ids="generate_script")
 
-    script_from_history = None
-    if not generated_script_result:
+    # 1. First, check if a script was generated in *this current run* (Script Generation Task)
+    final_script = ti.xcom_pull(key="generated_script", task_ids="generate_script")
+    
+    # 2. If not, look into Chat History (for the MVP "Reply to proceed" flow)
+    if not final_script:
         chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input") or []
         
-        # Iterate backwards to find the last Assistant message
+        # Iterate backwards to find the latest Assistant message
         for msg in reversed(chat_history):
-            role = msg.get("role", "").lower()
-            if role in ["assistant", "model"]:
-                content = msg.get("content", "")
+            if msg.get("role") == "assistant":
+                raw_content = msg.get("content", "")
                 
-                # Regex to extract text specifically inside the Script block
-                # Matches: **📝 Script:** (newlines) > (captured text) (until **🎨 Visuals or end)
-                match = re.search(r"\*\*📝 Script:\*\*\s*\n?>\s*(.*?)(?=\n\*\*🎨|\Z)", content, re.DOTALL)
+                # MVP CLEANUP: 
+                # We simply split the string to get text between "📝 Script" and "🎨 Visuals"
+                # This prevents the avatar from reading the metadata or visual instructions.
+                if "📝 Script" in raw_content and "🎨 Visuals" in raw_content:
+                    try:
+                        # Split by Script header and take the second part
+                        part_after_header = raw_content.split("📝 Script")[1]
+                        # Split by Visuals header and take the first part
+                        clean_script = part_after_header.split("🎨 Visuals")[0]
+                        final_script = clean_script.strip()
+                    except Exception as e:
+                        logging.warning(f"Simple split failed, using raw content: {e}")
+                        final_script = raw_content
+                else:
+                    # If headers are missing, fallback to the full message
+                    final_script = raw_content
                 
-                if match:
-                    script_from_history = match.group(1).strip()
-                    logging.info("Recovered script from conversation history.")
-                    break
-    user_script = email_data.get("content", "").strip()
-    
-    # Use generated script if available, otherwise use user's original prompt as script
-    final_script = final_script = generated_script_result or script_from_history or user_script
+                logging.info(f"Recovered script from history (len={len(final_script)})")
+                break
+
+    # 3. Last Resort: User Input (Fallback if history is empty)
+    if not final_script:
+        final_script = email_data.get("content", "").strip()
 
     
     if not final_script:
