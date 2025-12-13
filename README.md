@@ -18,8 +18,8 @@ This workflow allows you to interact with ClipFoundry just like you would with a
 **Step 1: Send a Minimal Prompt**
 Send an email to the ClipFoundry address with a simple subject and body. You don't need to write the script yourself.
 
-> **To:** `[INSERT_EMAIL_ADDRESS_HERE]`
-> **Subject:** New Reel Request
+> **To:** `image-processor-demo2025g@lowtouch.ai`
+> **Subject:** New Request
 > **Body:** “Create me a reel on NVIDIA CEO’s recent comment on the five layers of AI.”
 
 **Step 2: Automated Intelligence**
@@ -52,7 +52,7 @@ Once you approve, the agent locks the script, generates the visual clips using A
 
 Access ClipFoundry via the **OpenWebUI** interface for a faster, direct workflow. This is perfect when you already have assets or want immediate results without the email back-and-forth.
 
-> **Access the Chat:** `[INSERT_CHAT_URL_HERE]`
+> **Access the Chat:** `https://demo2025g.clipfoundry.ai`
 
 #### How it Works:
 **Step 1: Upload Assets (Optional)**
@@ -78,7 +78,7 @@ When the process is complete, the Agent will respond directly in the chat with a
 
 ---
 
-## 🛠️ Under the HoodClipFoundry runs as a self-contained appliance on your infrastructure, ensuring privacy and control.
+## 🛠️ Under the Hood ClipFoundry runs as a self-contained appliance on your infrastructure, ensuring privacy and control.
 
 * **Orchestrator:** Apache Airflow manages the complex workflows (Inbox Monitor, VideoGen DAG).
 * **Scripting Brain:** Google Gemini (LLM) handles intent classification, research, and scriptwriting.
