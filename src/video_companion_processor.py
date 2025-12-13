@@ -682,9 +682,10 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[]):
         final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
         # Pick ONE random image
         selected_image = random.choice(image_list) if image_list else None
-        
+        logging.info(f"Images : {image_list}")
+        logging.info(f"Selected images {selected_image}")
         config_item = {
-            "image_path": selected_image,
+            "image_path": selected_image.get("path"),
             "prompt": text,
             "duration": final_duration,
             "aspect_ratio": aspect_ratio
@@ -898,7 +899,7 @@ def split_script_task(**context):
     try:
         final_data = extract_json_from_text(final_json)
         final_segments = final_data.get("segments", final_data) if isinstance(final_data, dict) else final_data
-        
+        logging.info(f"Images: {images}")
         segments_for_processing = build_scene_config(
             segments_data=final_segments, 
             aspect_ratio=aspect_ratio, 
@@ -1313,7 +1314,7 @@ This DAG processes video generation requests from email.
 """
 
 with DAG(
-    "script_builder",
+    "video_companion_processor",
     description="video_companion_processor:v0.3",
     default_args=default_args,
     schedule_interval=None,
