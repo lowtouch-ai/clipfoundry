@@ -1298,11 +1298,11 @@ with DAG(
         provide_context=True
     )
 
-    send_unclear_idea_task = PythonOperator(
-   `     task_id="send_unclear_idea_email",
-        python_callable=send_unclear_idea_email,
-        provide_context=True
-    )
+    # send_unclear_idea_task = PythonOperator(
+    #     task_id="send_unclear_idea_email",
+    #     python_callable=send_unclear_idea_email,
+    #     provide_context=True
+    # )
 
     generate_script_task = BranchPythonOperator(  # ✅ Correct for branching
         task_id="generate_script",
