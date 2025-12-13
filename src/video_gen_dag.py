@@ -175,7 +175,6 @@ def split_script_task(**context):
     
     raw_data = ti.xcom_pull(key='config', task_ids='get_config')
     images = ti.xcom_pull(key='images', task_ids='get_config')
-    logger.info
     script_content = raw_data.get('script_content')
     
     # Extract Aspect Ratio (Default to 16:9 if missing)
