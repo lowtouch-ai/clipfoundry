@@ -122,7 +122,7 @@ class GoogleVeoVideoTool(BaseTool):
 
             result = operation.result
             if not result or not getattr(result, "generated_videos", None):
-                logging.info("Video not generated")
+                logging.info(f"Video not generated, {result}")
                 raise ValueError("No video returned from Veo")
             generated_videos = result.generated_videos
             saved_paths: List[str] = []
