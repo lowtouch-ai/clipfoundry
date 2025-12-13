@@ -66,6 +66,44 @@ def authenticate_gmail():
         logging.error(f"Gmail authentication failed: {e}")
         return None
 
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import base64
+
+def send_reply_to_thread(service, thread_id, message_id, recipient, subject, reply_html_body):
+    """
+    Send an HTML reply in the same Gmail thread.
+    This ensures all messages stay in the same thread → same workspace.
+    """
+    try:
+        # Create multipart message (plain + HTML)
+        msg = MIMEMultipart("alternative")
+        msg["To"] = recipient
+        msg["From"] = VIDEO_COMPANION_FROM_ADDRESS
+        msg["Subject"] = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+        msg["In-Reply-To"] = message_id
+        msg["References"] = message_id  # Helps threading
+
+        # Plain text fallback
+        plain_text = re.sub(r"<[^>]+>", "", reply_html_body)
+        msg.attach(MIMEText(plain_text, "plain"))
+        msg.attach(MIMEText(reply_html_body, "html"))
+
+        # Encode and send with threadId
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        body = {
+            "raw": raw_message,
+            "threadId": thread_id  # ← THIS KEEPS IT IN THE SAME THREAD
+        }
+
+        sent = service.users().messages().send(userId="me", body=body).execute()
+        logging.info(f"Reply sent successfully in thread {thread_id}, message ID: {sent['id']}")
+        return sent
+
+    except Exception as e:
+        logging.error(f"Failed to send reply in thread {thread_id}: {e}", exc_info=True)
+        raise
+
 def get_gemini_response(
     prompt: str,
     system_instruction: str | None = None,
@@ -406,120 +444,20 @@ def send_missing_elements_email(**kwargs):
     
     service = authenticate_gmail()
     if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
+        thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+        original_message_id = headers.get("Message-ID", "")
+
+        send_reply_to_thread(
+            service=service,
+            thread_id=thread_id,
+            message_id=original_message_id,
+            recipient=sender_email,
+            subject=subject,
+            reply_html_body=html_content
+        )
         mark_message_as_read(service, message_id)
     
     logging.info("Sent missing elements email")
-
-def send_unclear_idea_email(**kwargs):
-    """Send email about unclear idea."""
-    ti = kwargs['ti']
-    
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
-    
-    headers = email_data.get("headers", {})
-    sender_email = headers.get("From", "")
-    sender_name = "there"
-    name_match = re.search(r'^([^<]+)', sender_email)
-    if name_match:
-        sender_name = name_match.group(1).strip()
-    
-    subject = headers.get("Subject", "Video Generation Request")
-    if not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}"
-    
-    html_content = f"""
-<html>
-<head>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .greeting {{
-            margin-bottom: 15px;
-        }}
-        .message {{
-            margin: 15px 0;
-        }}
-        .issue-box {{
-            background-color: #fff3cd;
-            border-left: 4px solid #ffc107;
-            padding: 15px;
-            margin: 20px 0;
-        }}
-        .examples {{
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
-        }}
-        .closing {{
-            margin-top: 20px;
-        }}
-        .signature {{
-            margin-top: 20px;
-            font-weight: bold;
-        }}
-    </style>
-</head>
-<body>
-    <div class="greeting">
-        <p>Hello {sender_name},</p>
-    </div>
-    
-    <div class="message">
-        <p>Thank you for providing the images and your request. However, I need more clarity about what kind of video you'd like me to create.</p>
-    </div>
-    
-    <div class="issue-box">
-        <strong>Issue:</strong>
-        <p>Your prompt doesn't clearly specify the type of video or the goal you want to achieve.</p>
-    </div>
-    
-    <div class="examples">
-        <strong>Examples of Clear Ideas:</strong>
-        <ul>
-            <li>"Create a professional talking head video where I introduce our new product"</li>
-            <li>"Make a video of me explaining the benefits of our service as a testimonial"</li>
-            <li>"Generate a video where I'm presenting the quarterly sales results"</li>
-            <li>"Create a video tutorial where I explain how to use our software"</li>
-        </ul>
-    </div>
-    
-    <div class="message">
-        <p>Please reply with a clearer description of:</p>
-        <ul>
-            <li>What type of video you want (talking head, presentation, tutorial, etc.)</li>
-            <li>What the purpose or goal of the video is</li>
-            <li>The context or setting you envision</li>
-        </ul>
-    </div>
-    
-    <div class="closing">
-        <p>Once I understand your vision better, I can either generate a script for you or proceed with your existing content.</p>
-    </div>
-    
-    <div class="signature">
-        <p>Best regards,<br>
-        Video Companion Assistant</p>
-    </div>
-</body>
-</html>
-"""
-    
-    service = authenticate_gmail()
-    if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
-        mark_message_as_read(service, message_id)
-    
-    logging.info("Sent unclear idea email")
 
 def generate_script(**kwargs):
     """Generate video script based on user's idea."""
@@ -672,7 +610,17 @@ Return ONLY the script text, no additional formatting or explanations.
     
     service = authenticate_gmail()
     if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
+        thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+        original_message_id = headers.get("Message-ID", "")
+
+        send_reply_to_thread(
+            service=service,
+            thread_id=thread_id,
+            message_id=original_message_id,
+            recipient=sender_email,
+            subject=subject,
+            reply_html_body=html_content
+        )
         mark_message_as_read(service, message_id)
     
     logging.info("Sent script confirmation email")
@@ -725,11 +673,12 @@ def generate_video(**kwargs):
         ti.xcom_push(key="video_generation_success", value=False)
 
 def send_video_email(**kwargs):
-    """Send generated video to user."""
+    """Send generated video to user in the same thread."""
     ti = kwargs['ti']
     
     email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="generate_video")
     video_success = ti.xcom_pull(key="video_generation_success", task_ids="generate_video")
     
@@ -743,150 +692,91 @@ def send_video_email(**kwargs):
     subject = headers.get("Subject", "Video Generation Request")
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
-    
+
+    original_message_id = headers.get("Message-ID", "")
+
+    service = authenticate_gmail()
+    if not service:
+        logging.error("Failed to authenticate Gmail for sending video")
+        return
+
     if video_success and video_path and os.path.exists(video_path):
         html_content = f"""
 <html>
 <head>
     <style>
-        body {{
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .greeting {{
-            margin-bottom: 15px;
-        }}
-        .message {{
-            margin: 15px 0;
-        }}
-        .success-box {{
-            background-color: #d4edda;
-            border-left: 4px solid #28a745;
-            padding: 15px;
-            margin: 20px 0;
-        }}
-        .closing {{
-            margin-top: 20px;
-        }}
-        .signature {{
-            margin-top: 20px;
-            font-weight: bold;
-        }}
+        body {{font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;}}
+        .success-box {{background-color: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 20px 0;}}
+        .closing {{margin-top: 20px;}}
+        .signature {{margin-top: 20px; font-weight: bold;}}
     </style>
 </head>
 <body>
-    <div class="greeting">
-        <p>Hello {sender_name},</p>
-    </div>
-    
+    <p>Hello {sender_name},</p>
     <div class="success-box">
         <strong>Video Generated Successfully!</strong>
-        <p>Your video has been created and is attached to this email.</p>
+        <p>Your video has been created and is attached below.</p>
     </div>
-    
-    <div class="message">
-        <p>Please find your generated video attached. The video was created using the images and script/prompt you provided.</p>
-        
-        <p>If you need any modifications or want to generate another video, feel free to start a new request or reply to this email.</p>
-    </div>
-    
-    <div class="closing">
-        <p>Thank you for using Video Companion!</p>
-    </div>
-    
-    <div class="signature">
-        <p>Best regards,<br>
-        Video Companion Assistant</p>
-    </div>
+    <p>Thank you for using Video Companion!</p>
+    <p>Best regards,<br>Video Companion Assistant</p>
 </body>
 </html>
 """
-        
-        service = authenticate_gmail()
-        if service:
-            send_email(
-                service, 
-                sender_email, 
-                subject, 
-                html_content, 
-                thread_headers=headers,
-                attachment_path=video_path,
-                attachment_name=os.path.basename(video_path)
+        # Use send_reply_to_thread but with attachment
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["To"] = sender_email
+            msg["From"] = VIDEO_COMPANION_FROM_ADDRESS
+            msg["Subject"] = subject
+            msg["In-Reply-To"] = original_message_id
+            msg["References"] = original_message_id
+
+            plain_text = re.sub(r"<[^>]+>", "", html_content)
+            msg.attach(MIMEText(plain_text, "plain"))
+            msg.attach(MIMEText(html_content, "html"))
+
+            # Attach video
+            with open(video_path, "rb") as f:
+                part = MIMEBase("video", "mp4")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename={os.path.basename(video_path)}"
             )
-            mark_message_as_read(service, message_id)
-        
-        logging.info("Sent video email with attachment")
+            msg.attach(part)
+
+            raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            body = {
+                "raw": raw_message,
+                "threadId": thread_id  # ← Critical: keeps it in same thread
+            }
+
+            sent = service.users().messages().send(userId="me", body=body).execute()
+            logging.info(f"Video sent in thread {thread_id}: {sent['id']}")
+
+        except Exception as e:
+            logging.error(f"Failed to send video: {e}", exc_info=True)
+
     else:
-        # Send error email
+        # Send error (fallback)
         html_content = f"""
-<html>
-<head>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .greeting {{
-            margin-bottom: 15px;
-        }}
-        .message {{
-            margin: 15px 0;
-        }}
-        .error-box {{
-            background-color: #f8d7da;
-            border-left: 4px solid #dc3545;
-            padding: 15px;
-            margin: 20px 0;
-        }}
-        .closing {{
-            margin-top: 20px;
-        }}
-        .signature {{
-            margin-top: 20px;
-            font-weight: bold;
-        }}
-    </style>
-</head>
-<body>
-    <div class="greeting">
-        <p>Hello {sender_name},</p>
-    </div>
-    
-    <div class="error-box">
-        <strong>Video Generation Issue</strong>
-        <p>We encountered an issue while generating your video. Our technical team has been notified.</p>
-    </div>
-    
-    <div class="message">
-        <p>We apologize for the inconvenience. Please try again later, or contact support if the issue persists.</p>
-    </div>
-    
-    <div class="closing">
-        <p>We'll work to resolve this as soon as possible.</p>
-    </div>
-    
-    <div class="signature">
-        <p>Best regards,<br>
-        Video Companion Assistant</p>
-    </div>
-</body>
-</html>
+<html><body>
+    <p>Hello {sender_name},</p>
+    <p>Sorry, video generation failed. Please try again.</p>
+    <p>Best,<br>Video Companion</p>
+</body></html>
 """
-        
-        service = authenticate_gmail()
-        if service:
-            send_email(service, sender_email, subject, html_content, thread_headers=headers)
-            mark_message_as_read(service, message_id)
-        
-        logging.info("Sent video generation error email")
+        send_reply_to_thread(
+            service=service,
+            thread_id=thread_id,
+            message_id=original_message_id,
+            recipient=sender_email,
+            subject=subject,
+            reply_html_body=html_content
+        )
+
+    mark_message_as_read(service, message_id)
 
 def send_error_email(**kwargs):
     """Send generic error email."""
@@ -1020,12 +910,6 @@ with DAG(
         provide_context=True
     )
 
-    send_unclear_idea_task = PythonOperator(
-        task_id="send_unclear_idea_email",
-        python_callable=send_unclear_idea_email,
-        provide_context=True
-    )
-
     generate_script_task = PythonOperator(
         task_id="generate_script",
         python_callable=generate_script,
@@ -1059,15 +943,12 @@ with DAG(
     validate_input_task >> [validate_prompt_clarity_task, send_missing_elements_task]
     
     validate_prompt_clarity_task >> [
-        send_unclear_idea_task,
         generate_script_task,
         generate_video_task,
         send_error_email_task
     ]
-    
     generate_script_task >> end_task
     generate_video_task >> send_video_email_task >> end_task
     
     send_missing_elements_task >> end_task
-    send_unclear_idea_task >> end_task
     send_error_email_task >> end_task
