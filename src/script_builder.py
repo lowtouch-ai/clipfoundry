@@ -652,10 +652,30 @@ def generate_video(**kwargs):
     
     # Get the script - either generated or user-provided
     generated_script_result = ti.xcom_pull(key="generated_script", task_ids="generate_script")
+
+    script_from_history = None
+    if not generated_script_result:
+        chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input") or []
+        
+        # Iterate backwards to find the last Assistant message
+        for msg in reversed(chat_history):
+            role = msg.get("role", "").lower()
+            if role in ["assistant", "model"]:
+                content = msg.get("content", "")
+                
+                # Regex to extract text specifically inside the Script block
+                # Matches: **📝 Script:** (newlines) > (captured text) (until **🎨 Visuals or end)
+                match = re.search(r"\*\*📝 Script:\*\*\s*\n?>\s*(.*?)(?=\n\*\*🎨|\Z)", content, re.DOTALL)
+                
+                if match:
+                    script_from_history = match.group(1).strip()
+                    logging.info("Recovered script from conversation history.")
+                    break
     user_script = email_data.get("content", "").strip()
     
     # Use generated script if available, otherwise use user's original prompt as script
-    final_script = generated_script_result if generated_script_result else user_script
+    final_script = final_script = generated_script_result or script_from_history or user_script
+
     
     if not final_script:
         logging.error("No script available for video generation")
