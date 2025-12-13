@@ -399,7 +399,6 @@ def send_video_email(**kwargs):
     email_data = conf.get("email_data", "")
     message_id = conf.get("message_id", "")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
-    # video_success = ti.xcom_pull(key="video_generation_status", task_ids="merge_all_videos")
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
@@ -411,6 +410,10 @@ def send_video_email(**kwargs):
     subject = headers.get("Subject", "Video Generation Request")
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
+    
+    # Get the email address to send FROM (your service account)
+    # You need to define this - either from config, environment variable, or Airflow Variable
+    from_email = sender_email# REPLACE THIS
     
     if video_path and os.path.exists(video_path):
         html_content = f"""
@@ -477,8 +480,9 @@ def send_video_email(**kwargs):
         service = authenticate_gmail(GMAIL_CREDENTIALS)
         if service:
             send_email(
-                service, 
-                sender_email, 
+                service,
+                from_email,      # ADD THIS - the email address you're sending FROM
+                sender_email,    # This is the recipient (the person who requested the video)
                 subject, 
                 html_content, 
                 thread_headers=headers,
@@ -549,12 +553,22 @@ def send_video_email(**kwargs):
 </html>
 """
         
-        service = authenticate_gmail()
+        service = authenticate_gmail(GMAIL_CREDENTIALS)
         if service:
-            send_email(service, sender_email, subject, html_content, thread_headers=headers)
+            send_email(
+                service,
+                from_email,      # ADD THIS
+                sender_email,    # Recipient
+                subject, 
+                html_content, 
+                thread_headers=headers
+            )
             mark_message_as_read(service, message_id)
         
         logging.info("Sent video generation error email")
+        
+        
+        
 # Main DAG definition
 dag = DAG(
     'video_generation_and_merge_pipeline',
