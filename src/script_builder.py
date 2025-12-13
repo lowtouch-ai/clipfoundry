@@ -307,8 +307,9 @@ USER MESSAGE: "{prompt}"
     2. "has_script": false if the user provided an IDEA, TOPIC, or asked YOU to write the script.
     3. "action": "generate_video" if has_script is true.
     4. "action": "generate_script" if has_script is false.
-
+    5. Options for aspect_ratio are 9:16 and 16:9 give this based on user request
     Return JSON:
+    ``json
     {{
       "has_clear_idea": true|false,
       "has_script": true|false,
@@ -319,6 +320,7 @@ USER MESSAGE: "{prompt}"
       "aspect_ratio": "16:9", 
       "resolution": "720p"
     }}
+    ```
     """
 
     response = get_gemini_response(
