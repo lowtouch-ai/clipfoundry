@@ -1425,7 +1425,7 @@ with DAG(
     generate_script_task >> end_task
 
     # Video processing pipeline (starts from split_script)
-    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_email >> end_task
+    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_email 
 
     # Error/completion paths
     send_missing_elements_task >> end_task
