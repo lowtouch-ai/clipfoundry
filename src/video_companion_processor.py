@@ -1074,7 +1074,7 @@ def send_video_email(**kwargs):
     # Check if this is an agent trigger - if so, just return the path
     if is_agent_trigger(conf):
         logging.info("Agent trigger detected: Skipping video email.")
-        return {"video_path": video_path}
+        return {"video_path": video_path,"status":"success"}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
