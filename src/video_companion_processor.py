@@ -18,6 +18,8 @@ from google import genai
 from google.genai import types
 import random
 from pathlib import Path
+from airflow.exceptions import AirflowException
+from datetime import date
 # Add the parent directory to Python path
 import sys
 dag_dir = Path(__file__).parent
@@ -35,14 +37,14 @@ default_args = {
     "retries": 1
 }
 
-VIDEO_COMPANION_FROM_ADDRESS = Variable.get("video.companion.from.address")
-GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
+VIDEO_COMPANION_FROM_ADDRESS = Variable.get("CF.companion.from.address")
+GMAIL_CREDENTIALS = Variable.get("CF.companion.gmail.credentials")
 SHARED_IMAGES_DIR = "/appz/shared_images"
 VIDEO_OUTPUT_DIR = "/appz/video_outputs"
-GEMINI_API_KEY = Variable.get("video.companion.gemini.api_key")
+GEMINI_API_KEY = Variable.get("CF.companion.gemini.api_key")
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
-GEMINI_MODEL = Variable.get("video.companion.gemini.model", default_var="gemini-2.5-flash")
+GEMINI_MODEL = Variable.get("CF.companion.gemini.model", default_var="gemini-2.5-flash")
 CLARITY_ANALYZER_SYSTEM = """
 You are an expert Video Production QA Assistant.
 Your only job is to strictly evaluate whether a user request contains enough information to generate a high-quality talking-head AI avatar video.
@@ -221,18 +223,20 @@ def mark_message_as_read(service, message_id):
     except Exception as e:
         logging.error(f"Failed to mark as read: {e}")
         return False
-
-def validate_input(**kwargs):
+def agent_input_task(**kwargs):
     """
-    Validate input from both Email and Agent sources.
+    Extract and standardize input from both Email and Agent sources.
+    Pushes all raw and normalized data to XCom for downstream tasks.
     """
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
+    ti = kwargs['ti']
     
     # 1. Extract raw config sections
     agent_headers = conf.get("agent_headers", {})
     chat_inputs = conf.get("chat_inputs", {})
     email_data = conf.get("email_data", {})
+    
     # 2. Unified Extraction Strategy
     # Check Chat Inputs first (Agent), then fallback to Email Data
     prompt = chat_inputs.get("message", "") or email_data.get("content", "")
@@ -246,18 +250,96 @@ def validate_input(**kwargs):
     message_id = conf.get("message_id", "")
     
     # 3. Push Standardized Data to XCom
-    ti = kwargs['ti']
     ti.xcom_push(key="agent_headers", value=agent_headers)
     
-    # Update email_data in XCom to ensure downstream tasks find the content
+    # Update email_data to ensure downstream tasks find the content
     # regardless of where it came from
     updated_email_data = email_data.copy()
     updated_email_data["content"] = prompt
     ti.xcom_push(key="email_data", value=updated_email_data)
+    
     ti.xcom_push(key="images", value=images)
     ti.xcom_push(key="chat_history", value=chat_history)
     ti.xcom_push(key="thread_id", value=thread_id)
     ti.xcom_push(key="message_id", value=message_id)
+    ti.xcom_push(key="prompt", value=prompt)
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+    # Push user email if available from agent headers
+    if sender_email:
+        ti.xcom_push(
+            key="ltai-user-email",
+            value=sender_email.strip().lower()
+        )
+    if agent_headers and "ltai-user-email" in agent_headers:
+        ti.xcom_push(
+            key="ltai-user-email",
+            value=agent_headers["ltai-user-email"].strip().lower()
+        )
+    
+    logging.info(f"Input extracted - Prompt length: {len(prompt)}, Images: {len(images)}")
+    return "freemium_guard_task"
+
+
+def freemium_guard_task(**kwargs):
+    """
+    Enforce free tier limits for non-internal users.
+    Internal users (ecloudcontrol.com) bypass limits.
+    """
+    ti = kwargs['ti']
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Get user email from previous task
+    email = (ti.xcom_pull(
+        task_ids="agent_input_task",
+        key="ltai-user-email"
+    ) or "").strip().lower()
+    
+    if not email:
+        logging.warning("No user email found, skipping freemium guard")
+        return "end"
+    
+    # Check if internal user
+    domain = email.split("@")[-1]
+    if domain == "ecloudcontrol.com":
+        logging.info(f"Internal user detected: no limits applied")
+        ti.xcom_push(key="user_type",value="Internal")
+        return "validate_input"
+    
+    # Check free tier usage
+    bucket_key = f"clipfoundry_free_daily::{email}::{today}"
+    current = int(ti.xcom_pull(key=bucket_key, include_prior_dates=True) or 0)
+    
+    USAGE_LIMIT = Validate.get("CF.video.external.limit",default_var=5)
+    logging.info(f"User has used {current}/{USAGE_LIMIT} free videos today")
+    if current >= USAGE_LIMIT:
+        logging.error(f"Free tier limit reached ")
+        raise AirflowException(
+            f"Free tier limit reached for. "
+            "You've used all 5 free videos for today. "
+            "Please upgrade or try again tomorrow."
+        )
+    
+    # Increment usage counter
+    ti.xcom_push(key=bucket_key, value=current + 1)
+    logging.info(f"Incremented usage for to {current + 1}")
+    ti.xcom_push(key="user_type",value="external")
+    
+    return "validate_input"
+
+
+def validate_input(**kwargs):
+    """
+    Validate that required elements (prompt and images) are present.
+    Routes to appropriate next step based on validation result and source.
+    """
+    ti = kwargs['ti']
+    
+    # Pull standardized data from agent_input_task
+    prompt = ti.xcom_pull(task_ids="agent_input_task", key="prompt") or ""
+    images = ti.xcom_pull(task_ids="agent_input_task", key="images") or []
+    agent_headers = ti.xcom_pull(task_ids="agent_input_task", key="agent_headers") or {}
+    email_data = ti.xcom_pull(task_ids="agent_input_task", key="email_data") or {}
     
     logging.info(f"Validating input - Prompt length: {len(prompt)}, Images: {len(images)}")
     
@@ -265,35 +347,35 @@ def validate_input(**kwargs):
     missing = []
     if not prompt:
         missing.append("prompt/idea")
+    
     # NOTE: If you want to allow Script Generation WITHOUT images, 
     # remove the next two lines. Currently, images are mandatory.
     if not images:
         missing.append("image(s)")
     
     if missing:
-        logging.warning(f"Missing: {missing}")
+        logging.warning(f"Missing required elements: {missing}")
         ti.xcom_push(key="validation_status", value="missing_elements")
         ti.xcom_push(key="missing_elements", value=missing)
         
-        # Check Source
+        # Check Source - is this from Agent or Email?
         is_agent = bool(agent_headers) or not bool(email_data.get("headers", {}).get("From"))
         
         if is_agent:
             logging.info("Agent Trigger + Missing Info -> Stopping DAG (Agent will read XCom)")
-            return "end" # Bypass email task
+            return "end"  # Bypass email task
         else:
             return "send_missing_elements_email"
     
-    logging.info("Input valid")
+    logging.info("Input validation passed")
     ti.xcom_push(key="validation_status", value="valid")
     return "validate_prompt_clarity"
 
 def validate_prompt_clarity(**kwargs):
     ti = kwargs['ti']
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
     prompt = email_data.get("content", "").strip()
     
     conversation_history_for_ai = []
@@ -370,8 +452,8 @@ def send_missing_elements_email(**kwargs):
     """Send email about missing elements."""
     ti = kwargs['ti']
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
     missing_elements = ti.xcom_pull(key="missing_elements", task_ids="validate_input")
     agent_headers = ti.xcom_pull(key="agent_headers", task_ids="validate_input") or {}
     
@@ -474,7 +556,7 @@ def send_missing_elements_email(**kwargs):
     if sender_email and "@" in sender_email:
         service = authenticate_gmail()
         if service:
-            thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+            thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
             original_message_id = headers.get("Message-ID", "")
 
             send_reply_to_thread(
@@ -500,9 +582,9 @@ def generate_script(**kwargs):
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
     AVG_WPM = 140
     
@@ -621,7 +703,7 @@ _{data.get('visual_direction')}_
             service = authenticate_gmail()
             if service:
                 body = f"<html><body><p>Hello {sender_name},</p><p>Script draft:</p>{email_html}</body></html>"
-                thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+                thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
                 original_message_id = headers.get("Message-ID", "")
 
                 send_reply_to_thread(
@@ -652,12 +734,21 @@ _{data.get('visual_direction')}_
         return 'split_script'
 
 
-def build_scene_config(segments_data, aspect_ratio="16:9", images=[]):
+import math
+
+def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=20):
     """
     Transforms AI output into downstream config.
     NOW: Uses the 'duration' provided by the AI, with safety clamping.
+    MAX_SCENES is calculated based on max_video_duration.
     """
-    MAX_SCENES = 10
+    # Calculate MAX_SCENES based on video duration
+    # Using 8 seconds as the average scene duration for calculation
+    AVERAGE_SCENE_DURATION = 8.0
+    MAX_SCENES = math.ceil(max_video_duration / AVERAGE_SCENE_DURATION)
+    
+    # Ensure at least 1 scene
+    MAX_SCENES = max(1, MAX_SCENES)
     
     # Safety Limits (In case AI hallucinates a 20s or 1s duration)
     ABSOLUTE_MIN = 5.0
@@ -798,11 +889,11 @@ def split_script_task(**context):
 
     # --- INPUT HANDLING ---
     
-    images = ti.xcom_pull(key='images', task_ids='validate_input') 
+    images = ti.xcom_pull(key='images', task_ids='agent_input_task') 
     # script_content = raw_data.get('script_content')
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
     aspect_ratio = prompt_analysis.get("aspect_ratio")
     # This one needs fixing - it should handle both script and generated_script
@@ -812,7 +903,8 @@ def split_script_task(**context):
     text = email_data.get("content", "").strip()
     logging.info(f"{generate_script}, {text}")
     
-    
+    user_type = ti.xcom_pull(key="user_type", task_ids="agent_input_task")
+    MAX_DURATION = Variable.get("CF.video.internal.max_daration",default_var=20) if user_type == "internal" elif user_type == "external" Variable.get("CF.video.external.max_daration",default_var=20)
 
     logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
     # Get the script - either generated or user-provided
@@ -823,7 +915,7 @@ def split_script_task(**context):
     
     # 2. If not, look into Chat History (for the MVP "Reply to proceed" flow)
     if not final_script:
-        chat_history = ti.xcom_pull(key="chat_history", task_ids="validate_input") or []
+        chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task") or []
         
         # Iterate backwards to find the latest Assistant message
         for msg in reversed(chat_history):
@@ -903,7 +995,8 @@ def split_script_task(**context):
         segments_for_processing = build_scene_config(
             segments_data=final_segments, 
             aspect_ratio=aspect_ratio, 
-            images=images
+            images=images,
+            max_video_duration=MAX_DURATION
         )
         
         ti.xcom_push(key="segments", value=segments_for_processing)
@@ -921,10 +1014,10 @@ def process_single_segment(segment, segment_index, **context):
     ti = context['ti']
     logging.info(f"Processing segment {segment_index}: {segment}")
     
-    video_model = Variable.get('CF_video_model', default_var='mock')
+    video_model = Variable.get('CF.video.model', default_var='mock')
     
     if video_model == 'mock':
-        mock_list_raw = Variable.get('mock_list', default_var='[]')
+        mock_list_raw = Variable.get('CF.mock_list', default_var='[]')
         mock_list = json.loads(mock_list_raw) if mock_list_raw else []
         path_index = segment_index % len(mock_list)
         video_path = mock_list[path_index]
@@ -945,7 +1038,7 @@ def process_single_segment(segment, segment_index, **context):
                 prompt=segment.get('prompt'),
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
-                output_dir=Variable.get('OUTPUT_DIR', default_var='/appz/home/airflow/dags')
+                output_dir=Variable.get('CF.OUTPUT_DIR', default_var='/appz/home/airflow/dags')
             )
             
             if result.get('success'):
@@ -1066,9 +1159,9 @@ def send_video_email(**kwargs):
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
-    thread_id = ti.xcom_pull(key="thread_id", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
     
     # Check if this is an agent trigger - if so, just return the path
@@ -1212,8 +1305,8 @@ def send_error_email(**kwargs):
     """Send generic error email."""
     ti = kwargs['ti']
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="validate_input")
-    message_id = ti.xcom_pull(key="message_id", task_ids="validate_input")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
@@ -1323,6 +1416,16 @@ with DAG(
     tags=["video", "companion", "processor", "conversational"]
 ) as dag:
 
+    agent_input_task = BranchPythonOperator(
+        task_id="agent_input_task",
+        python_callable=agent_input_task,
+        provide_context=True
+    )
+    freemium_guard_task = BranchPythonOperator(
+        task_id="freemium_guard_task",
+        python_callable=freemium_guard_task,
+        provide_context=True
+    )
     validate_input_task = BranchPythonOperator(
         task_id="validate_input",
         python_callable=validate_input,
@@ -1411,7 +1514,7 @@ with DAG(
     # task1 >> task2 >> task3 >> process_segments >> collect_task >> merge_task
     
     # Task dependencies
-    validate_input_task >> [validate_prompt_clarity_task, send_missing_elements_task]
+    agent_input_task >> freemium_guard_task >> validate_input_task >> [validate_prompt_clarity_task, send_missing_elements_task]
 
     # From validate_prompt_clarity, branch to different paths
     validate_prompt_clarity_task >> [
