@@ -27,8 +27,8 @@ default_args = {
     "retries": 1
 }
 
-VIDEO_COMPANION_FROM_ADDRESS = Variable.get("video.companion.from.address")
-GMAIL_CREDENTIALS = Variable.get("video.companion.gmail.credentials")
+VIDEO_COMPANION_FROM_ADDRESS = Variable.get("CF.companion.from.address")
+GMAIL_CREDENTIALS = Variable.get("CF.companion.gmail.credentials")
 LAST_PROCESSED_EMAIL_FILE = "/appz/cache/video_companion_last_processed_email.json"
 SHARED_IMAGES_DIR = "/appz/shared_images"
 
