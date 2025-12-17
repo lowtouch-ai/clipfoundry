@@ -735,7 +735,7 @@ _{data.get('visual_direction')}_
 
 import math
 
-def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=20):
+def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=90):
     """
     Transforms AI output into downstream config.
     NOW: Uses the 'duration' provided by the AI, with safety clamping.
