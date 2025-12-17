@@ -273,7 +273,7 @@ def agent_input_task(**kwargs):
     if agent_headers and "X-LTAI-User" in agent_headers:
         ti.xcom_push(
             key="ltai-user-email",
-            value=agent_headers["X-LTAI-User"].strip().lower()
+            value=agent_headers["ltai-user-email"].strip().lower()
         )
     
     logging.info(f"Input extracted - Prompt length: {len(prompt)}, Images: {len(images)}")
@@ -904,12 +904,12 @@ def split_script_task(**context):
     
     user_type = ti.xcom_pull(key="user_type", task_ids="agent_input_task")
     if user_type == "internal":
-        MAX_DURATION = Variable.get("CF.video.internal.max_duration", default_var=20)
+        MAX_DURATION = Variable.get("CF.video.internal.max_duration", default_var=90)
     elif user_type == "external":
-        MAX_DURATION = Variable.get("CF.video.external.max_duration", default_var=20)
+        MAX_DURATION = Variable.get("CF.video.external.max_duration", default_var=90)
     else:
         # Optional: Handle other cases with a default
-        MAX_DURATION = 20 
+        MAX_DURATION = 90
 
     logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
     # Get the script - either generated or user-provided
