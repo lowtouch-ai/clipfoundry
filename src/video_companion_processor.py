@@ -244,6 +244,7 @@ def agent_input_task(**kwargs):
     # Images might be in 'files' (Agent) or 'images' (Email/Direct)
     images = chat_inputs.get("files", []) or conf.get("images", [])
     
+    logging.info(f"Thinking: I've received your request. I'm now analyzing the {len(images)} image(s) and your prompt to understand exactly what you need...")
     chat_history = conf.get("chat_history", [])
     thread_id = conf.get("thread_id", "")
     message_id = conf.get("message_id", "")
@@ -342,6 +343,7 @@ def validate_input(**kwargs):
     
     logging.info(f"Validating input - Prompt length: {len(prompt)}, Images: {len(images)}")
     
+    logging.info("Thinking: Checking if I have all the necessary ingredients (images and a text description) to start production...")
     # 4. Validation Logic
     missing = []
     if not prompt:
@@ -368,6 +370,7 @@ def validate_input(**kwargs):
     
     logging.info("Input validation passed")
     ti.xcom_push(key="validation_status", value="valid")
+    logging.info("Thinking: Everything looks good! I have the required inputs to proceed with the creative process.")
     return "validate_prompt_clarity"
 
 def validate_prompt_clarity(**kwargs):
@@ -414,6 +417,7 @@ USER MESSAGE: "{prompt}"
     }}
     ```
     """
+    logging.info("Thinking: I'm analyzing your request to determine the video style, tone, and script requirements...")
 
     response = get_gemini_response(
         prompt=analysis_prompt,
@@ -442,9 +446,11 @@ USER MESSAGE: "{prompt}"
     if has_script:
         logging.info("User provided a script. Routing to Video Generation.")
         ti.xcom_push(key="final_script", value=prompt)
+        logging.info("Thinking: I see you've provided a specific script. I will skip the writing phase and produce the video exactly as you wrote it.")
         return "split_script"
     else:
         logging.info(f"No script detected (Idea: {idea_description}). Routing to Script Generation.")
+        logging.info(f"Thinking: I understand your idea. I will now write a creative script for you that fits this concept.")
         return "generate_script"
 
 def send_missing_elements_email(**kwargs):
@@ -606,6 +612,7 @@ def generate_script(**kwargs):
     # 3. Retry Logic
     try_number = ti.try_number
     logging.info(f"Generating Script - Attempt #{try_number}")
+    logging.info(f"Thinking: Drafting a compelling script for your video (Attempt #{try_number}). Ensuring it fits within the time limit...")
     
     constraint_note = ""
     if try_number > 1:
@@ -727,6 +734,7 @@ _{data.get('visual_direction')}_
         "raw_data": data
     }
     ti.xcom_push(key="generated_output", value=generated_output)
+    logging.info(f"Thinking: Script drafted! It's estimated to be around {est_time:.0f} seconds long. Moving on to visual planning.")
     if not is_agent_trigger(conf):
         return 
     else:
@@ -963,6 +971,7 @@ def split_script_task(**context):
     
     # logging.info(f"Triggering video generation DAG for thread {thread_id}")
     
+    logging.info("Thinking: I'm breaking down the script into individual scenes to ensure the video flows naturally...")
     # Step A: Clean Extraction
     draft_json = get_gemini_response(
         prompt=f"Extract spoken lines from:\n{script_content}",
@@ -985,6 +994,7 @@ def split_script_task(**context):
         logging.error("No script lines found")
         return []
 
+    logging.info("Thinking: For each scene, I am calculating the perfect timing and assigning the best visual style to match the spoken words...")
     # Step B: Pacing
     final_json = get_gemini_response(
         prompt=f"Optimize these lines for natural video flow:\n{json.dumps(draft_segments)}",
@@ -1019,6 +1029,7 @@ def process_single_segment(segment, segment_index, **context):
     ti = context['ti']
     logging.info(f"Processing segment {segment_index}: {segment}")
     
+    logging.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
     video_model = Variable.get('CF.video.model', default_var='mock')
     
     if video_model == 'mock':
@@ -1028,6 +1039,7 @@ def process_single_segment(segment, segment_index, **context):
         video_path = mock_list[path_index]
         logging.info(f"Mock video {segment_index}: {video_path}")
         
+        logging.info(f"Thinking: Scene {segment_index + 1} rendering complete.")
         # Return dict with index to preserve order
         return {
             'index': segment_index,
@@ -1050,6 +1062,7 @@ def process_single_segment(segment, segment_index, **context):
                 video_path = result['video_paths'][0]
                 logging.info(f"✅ Generated segment {segment_index}: {video_path}")
                 
+                logging.info(f"Thinking: Scene {segment_index + 1} is successfully rendered and ready.")
                 return {
                     'index': segment_index,
                     'video_path': video_path
@@ -1126,6 +1139,7 @@ def collect_and_merge_videos(**context):
     
     logging.info(f"✅ Ready to merge {len(valid_paths)} videos with req_id: {req_id}")
     
+    logging.info(f"Thinking: All {len(valid_paths)} scenes are rendered. I am collecting them now to prepare for the final edit.")
     return merge_params
 
 def merge_videos_wrapper(**context):
@@ -1142,6 +1156,7 @@ def merge_videos_wrapper(**context):
     
     logging.info(f"🎬 Starting merge with params: {merge_params}")
     
+    logging.info(f"Thinking: Stitching all the scenes together into a seamless final video...")
     # Import the merge logic from the other DAG
     # You might need to adjust the import path based on your structure
     from ffmpg_merger import merge_videos_logic
@@ -1155,10 +1170,11 @@ def merge_videos_wrapper(**context):
     # result = "/appz/home/airflow/dags/video_v1.mp4"
     ti.xcom_push(key="generated_video_path", value=result)
     logging.info(f"✅ Merge complete! Output: {result}")
+    logging.info(f"Thinking: The final video is rendered! Adding final touches and preparing for delivery.")
     
     return result
 
-def send_video_email(**kwargs):
+def send_video(**kwargs):
     """Send generated video to user."""
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
@@ -1169,6 +1185,7 @@ def send_video_email(**kwargs):
     thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
     
+    logging.info("Thinking: Sending the final generated video now.")
     # Check if this is an agent trigger - if so, just return the path
     if is_agent_trigger(conf):
         logging.info("Agent trigger detected: Skipping video email.")
@@ -1413,7 +1430,7 @@ This DAG processes video generation requests from email.
 
 with DAG(
     "video_companion_processor",
-    description="video_companion_processor:v0.3",
+    description=" creator:0.3",
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
@@ -1509,9 +1526,9 @@ with DAG(
         dag=dag,
     )
     # Final merge task
-    send_video_email = PythonOperator(
-        task_id='send_video_email',
-        python_callable=send_video_email,
+    send_video_task = PythonOperator(
+        task_id='send_video',
+        python_callable=send_video,
         dag=dag,
     )
 
@@ -1533,7 +1550,7 @@ with DAG(
     generate_script_task >> end_task
 
     # Video processing pipeline (starts from split_script)
-    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_email 
+    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task 
 
     # Error/completion paths
     send_missing_elements_task >> end_task
