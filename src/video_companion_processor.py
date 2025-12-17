@@ -743,7 +743,7 @@ _{data.get('visual_direction')}_
 
 import math
 
-def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=20):
+def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=90):
     """
     Transforms AI output into downstream config.
     NOW: Uses the 'duration' provided by the AI, with safety clamping.
@@ -912,12 +912,12 @@ def split_script_task(**context):
     
     user_type = ti.xcom_pull(key="user_type", task_ids="agent_input_task")
     if user_type == "internal":
-        MAX_DURATION = Variable.get("CF.video.internal.max_duration", default_var=20)
+        MAX_DURATION = Variable.get("CF.video.internal.max_duration", default_var=90)
     elif user_type == "external":
-        MAX_DURATION = Variable.get("CF.video.external.max_duration", default_var=20)
+        MAX_DURATION = Variable.get("CF.video.external.max_duration", default_var=90)
     else:
         # Optional: Handle other cases with a default
-        MAX_DURATION = 20 
+        MAX_DURATION = 90
 
     logging.info(f"📥 Processing Script... (Aspect Ratio: {aspect_ratio})")
     # Get the script - either generated or user-provided
