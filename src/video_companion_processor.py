@@ -270,7 +270,7 @@ def agent_input_task(**kwargs):
             key="ltai-user-email",
             value=sender_email.strip().lower()
         )
-    if agent_headers and "ltai-user-email" in agent_headers:
+    if agent_headers and "X-LTAI-User" in agent_headers:
         ti.xcom_push(
             key="ltai-user-email",
             value=agent_headers["ltai-user-email"].strip().lower()
