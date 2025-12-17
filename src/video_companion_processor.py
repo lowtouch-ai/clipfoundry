@@ -236,7 +236,6 @@ def agent_input_task(**kwargs):
     agent_headers = conf.get("agent_headers", {})
     chat_inputs = conf.get("chat_inputs", {})
     email_data = conf.get("email_data", {})
-    
     # 2. Unified Extraction Strategy
     # Check Chat Inputs first (Agent), then fallback to Email Data
     prompt = chat_inputs.get("message", "") or email_data.get("content", "")
@@ -455,7 +454,7 @@ def send_missing_elements_email(**kwargs):
     email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
     message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
     missing_elements = ti.xcom_pull(key="missing_elements", task_ids="validate_input")
-    agent_headers = ti.xcom_pull(key="agent_headers", task_ids="validate_input") or {}
+    agent_headers = ti.xcom_pull(key="agent_headers", task_ids="agent_input_task") or {}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
