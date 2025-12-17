@@ -273,7 +273,7 @@ def agent_input_task(**kwargs):
     if agent_headers and "X-LTAI-User" in agent_headers:
         ti.xcom_push(
             key="ltai-user-email",
-            value=agent_headers["ltai-user-email"].strip().lower()
+            value=agent_headers["X-LTAI-User"].strip().lower()
         )
     
     logging.info(f"Input extracted - Prompt length: {len(prompt)}, Images: {len(images)}")
