@@ -39,8 +39,9 @@ default_args = {
 
 VIDEO_COMPANION_FROM_ADDRESS = Variable.get("CF.companion.from.address")
 GMAIL_CREDENTIALS = Variable.get("CF.companion.gmail.credentials")
-SHARED_IMAGES_DIR = "/appz/shared_images"
-VIDEO_OUTPUT_DIR = "/appz/video_outputs"
+SHARED_ROOT = "/appz/shared" 
+CACHE_ROOT = "/appz/cache"
+LOGS_ROOT = "/appz/logs"
 GEMINI_API_KEY = Variable.get("CF.companion.gemini.api_key")
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
@@ -291,7 +292,7 @@ def freemium_guard_task(**kwargs):
     
     # Get user email from previous task
     email = (ti.xcom_pull(
-        task_ids="agent_input_task",
+        task_ids="agent_input",
         key="ltai-user-email"
     ) or "").strip().lower()
     
@@ -336,10 +337,10 @@ def validate_input(**kwargs):
     ti = kwargs['ti']
     
     # Pull standardized data from agent_input_task
-    prompt = ti.xcom_pull(task_ids="agent_input_task", key="prompt") or ""
-    images = ti.xcom_pull(task_ids="agent_input_task", key="images") or []
-    agent_headers = ti.xcom_pull(task_ids="agent_input_task", key="agent_headers") or {}
-    email_data = ti.xcom_pull(task_ids="agent_input_task", key="email_data") or {}
+    prompt = ti.xcom_pull(task_ids="agent_input", key="prompt") or ""
+    images = ti.xcom_pull(task_ids="agent_input", key="images") or []
+    agent_headers = ti.xcom_pull(task_ids="agent_input", key="agent_headers") or {}
+    email_data = ti.xcom_pull(task_ids="agent_input", key="email_data") or {}
     
     logging.info(f"Validating input - Prompt length: {len(prompt)}, Images: {len(images)}")
     
@@ -375,9 +376,9 @@ def validate_input(**kwargs):
 
 def validate_prompt_clarity(**kwargs):
     ti = kwargs['ti']
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
-    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task")
-    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     prompt = email_data.get("content", "").strip()
     
     conversation_history_for_ai = []
@@ -457,10 +458,10 @@ def send_missing_elements_email(**kwargs):
     """Send email about missing elements."""
     ti = kwargs['ti']
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
-    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     missing_elements = ti.xcom_pull(key="missing_elements", task_ids="validate_input")
-    agent_headers = ti.xcom_pull(key="agent_headers", task_ids="agent_input_task") or {}
+    agent_headers = ti.xcom_pull(key="agent_headers", task_ids="agent_input") or {}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
@@ -561,7 +562,7 @@ def send_missing_elements_email(**kwargs):
     if sender_email and "@" in sender_email:
         service = authenticate_gmail()
         if service:
-            thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
+            thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
             original_message_id = headers.get("Message-ID", "")
 
             send_reply_to_thread(
@@ -587,14 +588,15 @@ def generate_script(**kwargs):
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
-    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task")
-    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
-    AVG_WPM = 140
+    AVG_WPM = 170
     
     prompt = email_data.get("content", "").strip()
     idea_description = prompt_analysis.get("idea_description", "")
+    target_tone = prompt_analysis.get("tone", "engaging and professional")
     
     # Build conversation history
     conversation_history_for_ai = []
@@ -624,8 +626,21 @@ def generate_script(**kwargs):
     # 4. Prompting
     TARGET_DURATION = 45
     system_instruction = f"""
-    You are 'Video Companion'.
-    GOAL: Write a video script based on user idea.
+    You are an expert Video Scriptwriter & Director with chameleonic adaptability.
+    
+    YOUR ROLE:
+    1. Analyze the requested topic and idea.
+    2. Adopt the specific persona best suited for this content (e.g., if medical, be a Doctor; if tech, be a Reviewer).
+    3. CURRENT PERSONA TARGET: You are writing in a {target_tone} style.
+    
+    PACING & DELIVERY INSTRUCTIONS (CRITICAL):
+    Regardless of the persona adopted, you must adhere to these video production standards:
+    1. Speak at a natural, energetic pace suitable for short-form video.
+    2. Target a delivery speed equivalent to approximately {AVG_WPM} words per minute.
+    3. Avoid long pauses. Keep sentence transitions tight and conversational.
+    4. Deliver the script confidently.
+    5. Do not slow down for dramatic effect unless explicitly necessary for the specific persona (but keep it rare).
+
     INSTRUCTIONS:
     1. Target: {TARGET_DURATION}s.
     2. Pace: {AVG_WPM} wpm.
@@ -709,7 +724,7 @@ _{data.get('visual_direction')}_
             service = authenticate_gmail()
             if service:
                 body = f"<html><body><p>Hello {sender_name},</p><p>Script draft:</p>{email_html}</body></html>"
-                thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
+                thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
                 original_message_id = headers.get("Message-ID", "")
 
                 send_reply_to_thread(
@@ -898,9 +913,9 @@ def split_script_task(**context):
     
     images = ti.xcom_pull(key='images', task_ids='agent_input_task') 
     # script_content = raw_data.get('script_content')
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
-    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task")
-    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
     aspect_ratio = prompt_analysis.get("aspect_ratio")
     # This one needs fixing - it should handle both script and generated_script
@@ -910,11 +925,11 @@ def split_script_task(**context):
     text = email_data.get("content", "").strip()
     logging.info(f"{generate_script}, {text}")
     
-    user_type = ti.xcom_pull(key="user_type", task_ids="freemium_guard_task")
+    user_type = ti.xcom_pull(key="user_type", task_ids="freemium_guard")
     if user_type == "internal":
-        MAX_DURATION = Variable.get("CF.video.internal.max_duration", default_var=90)
+        MAX_DURATION = int(Variable.get("CF.video.internal.max_duration", default_var=90))
     elif user_type == "external":
-        MAX_DURATION = Variable.get("CF.video.external.max_duration", default_var=90)
+        MAX_DURATION = int(Variable.get("CF.video.external.max_duration", default_var=90))
     else:
         # Optional: Handle other cases with a default
         MAX_DURATION = 90
@@ -928,7 +943,7 @@ def split_script_task(**context):
     
     # 2. If not, look into Chat History (for the MVP "Reply to proceed" flow)
     if not final_script:
-        chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input_task") or []
+        chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input") or []
         
         # Iterate backwards to find the latest Assistant message
         for msg in reversed(chat_history):
@@ -1027,6 +1042,15 @@ def process_single_segment(segment, segment_index, **context):
     CRITICAL: segment_index preserves the ORDER of video generation.
     """
     ti = context['ti']
+    dag_run = context['dag_run']
+    conf = dag_run.conf or {}
+    
+    chat_id = conf.get("chat_inputs", {}).get("chat_id", "manual_run")
+    chat_cache_dir = Path(CACHE_ROOT) / chat_id
+    
+    # Ensure it exists (redundancy check)
+    chat_cache_dir.mkdir(parents=True, exist_ok=True)
+
     logging.info(f"Processing segment {segment_index}: {segment}")
     
     logging.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
@@ -1055,7 +1079,7 @@ def process_single_segment(segment, segment_index, **context):
                 prompt=segment.get('prompt'),
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
-                output_dir=Variable.get('CF.OUTPUT_DIR', default_var='/appz/home/airflow/dags')
+                output_dir=str(chat_cache_dir)
             )
             
             if result.get('success'):
@@ -1081,6 +1105,17 @@ def prepare_segments_for_expand(**context):
     if not segments:
         logging.warning("No segments found!")
         return []
+    
+    video_model = Variable.get('CF.video.model', default_var='mock')
+    
+    # Only limit segments if we are in Mock Mode to prevent loop crashes
+    if video_model == 'mock':
+        MOCK_LIMIT = 3
+        if len(segments) > MOCK_LIMIT:
+            logging.info(f"Mock Mode detected: Limiting segments from {len(segments)} to {MOCK_LIMIT} to prevent resource exhaustion.")
+            segments = segments[:MOCK_LIMIT]
+    else:
+        logging.info(f"Production Mode ({video_model}): Processing all {len(segments)} segments.")
     
     # Return list of dicts with both segment and index for ordering
     return [
@@ -1122,8 +1157,8 @@ def collect_and_merge_videos(**context):
     if len(valid_paths) < len(video_paths):
         logging.warning(f"⚠️ Some videos are missing. Expected {len(video_paths)}, found {len(valid_paths)}")
     
-    if len(valid_paths) < 2:
-        logging.error("❌ Need at least 2 videos to merge")
+    if len(valid_paths) < 1:
+        logging.error("❌ Need at least 1 videos to proceed with merge.")
         raise ValueError("Insufficient videos for merge")
     
     # Generate request ID for merge
@@ -1147,6 +1182,13 @@ def merge_videos_wrapper(**context):
     Wrapper to call the existing merge logic from video_merger_pipeline.
     """
     ti = context['ti']
+    dag_run = context['dag_run']
+    conf = dag_run.conf or {}
+    
+    # --- NEW: Path Derivation ---
+    chat_id = conf.get("chat_inputs", {}).get("chat_id", "manual_run")
+    chat_cache_dir = Path(CACHE_ROOT) / chat_id
+    chat_shared_dir = Path(SHARED_ROOT) / chat_id
     
     # Get merge parameters
     merge_params = ti.xcom_pull(task_ids='collect_videos', key='merge_params')
@@ -1154,7 +1196,11 @@ def merge_videos_wrapper(**context):
     if not merge_params:
         raise ValueError("No merge parameters found")
     
-    logging.info(f"🎬 Starting merge with params: {merge_params}")
+    # Inject paths for the merger script
+    merge_params['work_dir'] = str(chat_cache_dir)
+    merge_params['output_dir'] = str(chat_shared_dir)
+    
+    logging.info(f"🎬 Starting merge with params: {merge_params} in {chat_cache_dir}, output to {chat_shared_dir}")
     
     logging.info(f"Thinking: Stitching all the scenes together into a seamless final video...")
     # Import the merge logic from the other DAG
@@ -1172,7 +1218,7 @@ def merge_videos_wrapper(**context):
     logging.info(f"✅ Merge complete! Output: {result}")
     logging.info(f"Thinking: The final video is rendered! Adding final touches and preparing for delivery.")
     
-    return result
+    return {"status": "success", "video_path": result}
 
 def send_video(**kwargs):
     """Send generated video to user."""
@@ -1180,9 +1226,9 @@ def send_video(**kwargs):
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
-    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
-    thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input_task")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
     
     logging.info("Thinking: Sending the final generated video now.")
@@ -1327,8 +1373,8 @@ def send_error_email(**kwargs):
     """Send generic error email."""
     ti = kwargs['ti']
     
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input_task")
-    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input_task")
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
@@ -1404,7 +1450,17 @@ def send_error_email(**kwargs):
     
     service = authenticate_gmail()
     if service:
-        send_email(service, sender_email, subject, html_content, thread_headers=headers)
+        thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
+        original_message_id = headers.get("Message-ID", "")
+
+        send_reply_to_thread(
+            service=service,
+            thread_id=thread_id,
+            message_id=original_message_id,
+            recipient=sender_email,
+            subject=subject,
+            reply_html_body=html_content
+        )
         mark_message_as_read(service, message_id)
     
     logging.info("Sent generic error email")
@@ -1439,31 +1495,36 @@ with DAG(
 ) as dag:
 
     agent_input_task = BranchPythonOperator(
-        task_id="agent_input_task",
+        task_id="agent_input",
         python_callable=agent_input_task,
-        provide_context=True
+        provide_context=True,
+        doc_md="Analyzing your request"
     )
     freemium_guard_task = BranchPythonOperator(
-        task_id="freemium_guard_task",
+        task_id="freemium_guard",
         python_callable=freemium_guard_task,
-        provide_context=True
+        provide_context=True,
+        doc_md="Checking usage limits"
     )
     validate_input_task = BranchPythonOperator(
         task_id="validate_input",
         python_callable=validate_input,
-        provide_context=True
+        provide_context=True,
+        doc_md="Validating inputs"
     )
 
     validate_prompt_clarity_task = BranchPythonOperator(
         task_id="validate_prompt_clarity",
         python_callable=validate_prompt_clarity,
-        provide_context=True
+        provide_context=True,
+        doc_md="Understanding your intent"
     )
 
     send_missing_elements_task = PythonOperator(
         task_id="send_missing_elements_email",
         python_callable=send_missing_elements_email,
-        provide_context=True
+        provide_context=True,
+        doc_md="Requesting missing info"
     )
 
     # send_unclear_idea_task = PythonOperator(
@@ -1475,7 +1536,8 @@ with DAG(
     generate_script_task = BranchPythonOperator(  # ✅ Correct for branching
         task_id="generate_script",
         python_callable=generate_script,
-        provide_context=True
+        provide_context=True,
+        doc_md="Drafting video script"
     )
 
 
@@ -1483,25 +1545,29 @@ with DAG(
     send_error_email_task = PythonOperator(
         task_id="send_error_email",
         python_callable=send_error_email,
-        provide_context=True
+        provide_context=True,
+        doc_md="Handling error"
     )
 
     end_task = DummyOperator(
         task_id="end",
-        trigger_rule="none_failed_min_one_success"
+        trigger_rule="none_failed_min_one_success",
+        doc_md="Finished"
     )
     
     split_script = PythonOperator(
         task_id='split_script',
         python_callable=split_script_task,
         dag=dag,
-        trigger_rule="none_failed_min_one_success"
+        trigger_rule="none_failed_min_one_success",
+        doc_md="Breaking down script"
     )
 
     prepare_segments = PythonOperator(
         task_id='prepare_segments',
         python_callable=prepare_segments_for_expand,
         dag=dag,
+        doc_md="Preparing scenes"
     )
 
     # Dynamic mapping - creates N parallel video generation tasks
@@ -1509,7 +1575,8 @@ with DAG(
         task_id='process_segment',
         python_callable=process_single_segment,
         dag=dag,
-        pool="video_processing_pool"
+        pool="video_processing_pool",
+        doc_md="Rendering scene"
     ).expand(op_kwargs=prepare_segments.output)
 
     # Collect all videos in correct order
@@ -1517,6 +1584,7 @@ with DAG(
         task_id='collect_videos',
         python_callable=collect_and_merge_videos,
         dag=dag,
+        doc_md="Collecting scenes"
     )
 
     # Final merge task
@@ -1524,12 +1592,14 @@ with DAG(
         task_id='merge_all_videos',
         python_callable=merge_videos_wrapper,
         dag=dag,
+        doc_md="Stitching final video"
     )
     # Final merge task
     send_video_task = PythonOperator(
         task_id='send_video',
         python_callable=send_video,
         dag=dag,
+        doc_md="Delivering video"
     )
 
     # Set dependencies - this is the key part!
