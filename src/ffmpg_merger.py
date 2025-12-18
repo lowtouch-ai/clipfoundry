@@ -1,8 +1,8 @@
 """
 DAG: video_merger_pipeline
 Author: lowtouch.ai Engineering
-Description: Merges video clips with natural xfade transitions and audio crossfades.
-             Handles dynamic resolutions (Landscape/Reels) and prevents audio gaps.
+Description: Merges video clips with High Fidelity intermediates, Smart Audio Mapping, 
+             and Robust Transitions (Anti-Drift).
 """
 
 import json
@@ -21,7 +21,7 @@ from airflow.utils.dates import days_ago
 # ================= configuration =================
 logger = logging.getLogger("airflow.task")
 
-# Configurable transition overlap duration (seconds)
+# DURATION OF THE FADE (Increase to 1.0s if you want it more noticeable)
 TRANSITION_DURATION = 0.5 
 
 default_args = {
@@ -36,74 +36,148 @@ default_args = {
 
 def get_video_metadata(file_path: str) -> Dict[str, Any]:
     """
-    Uses ffprobe to extract width, height, and exact duration.
+    Uses ffprobe to extract width, height, duration AND check for audio stream.
     """
     cmd = [
         "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,duration",
+        "-show_entries", "stream=width,height,duration,codec_type",
         "-of", "json",
         str(file_path)
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         data = json.loads(result.stdout)
-        stream = data['streams'][0]
+        
+        video_stream = next((s for s in data.get('streams', []) if s['codec_type'] == 'video'), None)
+        audio_stream = next((s for s in data.get('streams', []) if s['codec_type'] == 'audio'), None)
+        
+        if not video_stream:
+            raise ValueError(f"No video stream found in {file_path}")
+
         return {
-            'width': int(stream['width']),
-            'height': int(stream['height']),
-            'duration': float(stream.get('duration', 0))
+            'width': int(video_stream.get('width', 0)),
+            'height': int(video_stream.get('height', 0)),
+            'duration': float(video_stream.get('duration', 0)),
+            'has_audio': audio_stream is not None
         }
     except Exception as e:
         logger.error(f"Failed to probe {file_path}: {e}")
         raise
 
-def prepare_segment(
-    source_path: str, 
-    output_path: str, 
-    target_width: int, 
-    target_height: int
-) -> float:
+def prepare_segment(source_path: str, output_path: str, target_width: int, target_height: int) -> float:
     """
-    Standardizes a video segment:
-    1. Scales/Pads to match target resolution (keeping aspect ratio).
-    2. Normalizes audio to AAC 48k to prevent breaks.
-    3. Sets a standard frame rate.
-    
-    Returns: The exact duration of the processed clip.
+    Standardizes a video segment using High Quality settings & Smart Audio Mapping.
     """
-    # Filter: Scale to fit target box, then pad with black to fill target box
+    # 1. Probe to check for audio
+    meta = get_video_metadata(source_path)
+    has_audio = meta['has_audio']
+
     vf_filter = (
         f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
         f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2"
     )
     
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", source_path,
-        "-vf", vf_filter,
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-r", "30",              # Standardize Framerate
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", # Standardize Audio
-        output_path
-    ]
+    # Base command
+    cmd = ["ffmpeg", "-y", "-i", source_path]
     
-    logger.info(f"Standardizing segment: {source_path} -> {output_path}")
+    # AUDIO LOGIC ------------------------------------------
+    if has_audio:
+        # Case A: Source has audio. Use it explicitly.
+        cmd.extend(["-map", "0:v", "-map", "0:a"])
+    else:
+        # Case B: Source is silent. Generate silence to prevent sync issues.
+        cmd.extend([
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-map", "0:v", "-map", "1:a", # Map video from file, audio from generator
+            "-shortest" # Stop generator when video ends
+        ])
+    # ------------------------------------------------------
+
+    cmd.extend([
+        "-vf", vf_filter,
+        # HIGH QUALITY INTERMEDIATE SETTINGS
+        "-c:v", "libx264", 
+        "-preset", "fast",     
+        "-crf", "18",          # Visually lossless
+        "-pix_fmt", "yuv420p", # Essential for player compatibility
+        "-r", "30",
+        # HIGH QUALITY AUDIO
+        "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
+        output_path
+    ])
+    
+    logger.info(f"Standardizing segment (HQ, Audio={has_audio}): {source_path} -> {output_path}")
     subprocess.run(cmd, check=True, capture_output=True)
     
-    # Return new duration (encoding might shift it slightly)
-    meta = get_video_metadata(output_path)
-    return meta['duration']
+    new_meta = get_video_metadata(output_path)
+    return new_meta['duration']
+
+def merge_pair(video_a: str, video_b: str, output_path: str, duration_a: float) -> float:
+    """
+    Merges two video files (A + B) with High Fidelity and drift-proof timestamps.
+    """
+    offset = duration_a - TRANSITION_DURATION
+    if offset < 0: offset = 0
+    
+    # --- THE FIX: Force timestamps to 0 to prevent fade failure ---
+    # We use setpts=PTS-STARTPTS to reset the clock for both inputs before blending.
+    filter_complex = (
+        f"[0:v]setpts=PTS-STARTPTS[v0];"
+        f"[1:v]setpts=PTS-STARTPTS[v1];"
+        f"[v0][v1]xfade=transition=fade:duration={TRANSITION_DURATION}:offset={offset}[v];"
+        
+        f"[0:a]asetpts=PTS-STARTPTS[a0];"
+        f"[1:a]asetpts=PTS-STARTPTS[a1];"
+        f"[a0][a1]acrossfade=d={TRANSITION_DURATION}:c1=tri:c2=tri[a]"
+    )
+
+    
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_a,
+        "-i", video_b,
+        "-filter_complex", filter_complex,
+        "-map", "[v]", "-map", "[a]",
+        # HIGH QUALITY INTERMEDIATE SETTINGS
+        "-c:v", "libx264", 
+        "-preset", "fast", 
+        "-crf", "18",           
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "320k",
+        str(output_path)
+    ]
+    
+    logger.info(f"Merging pair (HQ): {Path(video_a).name} + {Path(video_b).name} (Offset: {offset}s)")
+    subprocess.run(cmd, check=True, capture_output=True)
+    
+    return get_video_metadata(output_path)['duration']
+
+def add_fades(input_path: str, output_path: str, duration: float):
+    """Adds fade out to the final consolidated video (Distribution Quality)."""
+    FADE_DURATION = 1.0
+    start_time = duration - FADE_DURATION
+    if start_time < 0: start_time = 0
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vf", f"fade=t=out:st={start_time}:d={FADE_DURATION}",
+        "-af", f"afade=t=out:st={start_time}:d={FADE_DURATION}",
+        # FINAL DISTRIBUTION SETTINGS
+        "-c:v", "libx264", 
+        "-preset", "medium",    # Better compression for final file
+        "-crf", "23",           # Standard web quality
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        str(output_path)
+    ]
+    
+    logger.info(f"Applying final fades: {output_path}")
+    subprocess.run(cmd, check=True, capture_output=True)
+
 
 def merge_videos_logic(**context):
-    """
-    Main Logic:
-    1. Parse inputs.
-    2. Determine Target Resolution (from first clip).
-    3. Pre-process all clips (Standardize).
-    4. Construct complex xfade/acrossfade filter command.
-    5. Execute Merge.
-    """
     params = context['params']
     
     # 1. Parse Inputs
@@ -117,148 +191,59 @@ def merge_videos_logic(**context):
         video_paths = raw_paths
 
     req_id = params.get('req_id', 'manual_test')
-    
-    if not video_paths:
-        raise ValueError("No video paths provided in params.")
-
     valid_paths = [p for p in video_paths if os.path.exists(p)]
-    
     if len(valid_paths) < 2:
-        logger.info("Less than 2 valid videos. No merge needed.")
+        logger.warning("Need at least 2 videos to merge.")
         return valid_paths[0] if valid_paths else None
 
     # Setup Workspaces
-    base_dir = Path(f"/appz/shared/{req_id}") if req_id != 'manual_test' else Path(f"/appz/shared/mock")
+    if 'work_dir' in params:
+        base_dir = Path(params['work_dir'])
+    else:
+        base_dir = Path(f"/appz/shared/{req_id}")
     temp_dir = base_dir / "temp"
-    output_dir = base_dir / "output" if req_id != 'manual_test' else base_dir / "input"
-    
+    output_dir = params.get('output_dir', base_dir / "output")
+    output_dir = Path(output_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Determine Target Resolution from Clip 1
+    # 2. Determine Target Resolution
     meta_first = get_video_metadata(valid_paths[0])
     target_w = meta_first['width']
     target_h = meta_first['height']
     logger.info(f"Target Resolution locked to: {target_w}x{target_h}")
 
-    # 3. Process Segments & Collect Exact Durations
+    # 3. Process Segments (Standardization)
     processed_clips = []
-    clip_durations = []
     
     for idx, raw_clip in enumerate(valid_paths):
         out_name = temp_dir / f"norm_{idx:03d}.mp4"
         duration = prepare_segment(str(raw_clip), str(out_name), target_w, target_h)
-        processed_clips.append(str(out_name))
-        clip_durations.append(duration)
-        logger.info(f"Clip {idx} duration: {duration}s")
+        processed_clips.append({'path': str(out_name), 'duration': duration})
 
-    # 4. Build FFmpeg Filter Complex
-    inputs = []
-    for clip in processed_clips:
-        inputs.extend(["-i", clip])
+    # 4. Iterative Merge
+    current_merged_path = processed_clips[0]['path']
+    current_duration = processed_clips[0]['duration']
 
-    filter_parts = []
-    
-    # Track duration to know when to start the Fade Out
-    cumulative_duration = clip_durations[0]
-    
-    # === Video Transitions (xfade) ===
-    current_v_label = "0:v"
-    
-    for i in range(len(processed_clips) - 1):
-        next_v_idx = i + 1
-        next_v_label = f"{next_v_idx}:v"
+    for i in range(1, len(processed_clips)):
+        next_clip = processed_clips[i]
+        step_output = temp_dir / f"step_merge_{i}.mp4"
         
-        offset = cumulative_duration - TRANSITION_DURATION
-        if offset < 0: offset = 0
-        
-        # LOGIC FIX: Explicitly check if this is the LAST transition
-        is_last_transition = (i == len(processed_clips) - 2)
-        
-        if is_last_transition:
-            # If it's the last transition, output to 'v_raw' so the Fade effect can grab it
-            target_v_label = "v_raw"
-        else:
-            # Otherwise, keep chaining internally (v0, v1, etc.)
-            target_v_label = f"v{i}"
-        
-        xfade_cmd = (
-            f"[{current_v_label}][{next_v_label}]"
-            f"xfade=transition=fade:duration={TRANSITION_DURATION}:offset={offset}"
-            f"[{target_v_label}]"
+        new_duration = merge_pair(
+            current_merged_path, 
+            next_clip['path'], 
+            str(step_output), 
+            current_duration
         )
-        filter_parts.append(xfade_cmd)
         
-        current_v_label = target_v_label
-        
-        # Update total duration
-        cumulative_duration += (clip_durations[next_v_idx] - TRANSITION_DURATION)
+        current_merged_path = str(step_output)
+        current_duration = new_duration
 
-    # === Audio Transitions (acrossfade) ===
-    current_a_label = "0:a"
-    for i in range(len(processed_clips) - 1):
-        next_a_idx = i + 1
-        next_a_label = f"{next_a_idx}:a"
-        
-        # LOGIC FIX: Explicitly check if this is the LAST transition
-        is_last_transition = (i == len(processed_clips) - 2)
-        
-        if is_last_transition:
-             # If last, output to 'a_raw'
-            target_a_label = "a_raw"
-        else:
-            target_a_label = f"a{i}"
-        
-        afade_cmd = (
-            f"[{current_a_label}][{next_a_label}]"
-            f"acrossfade=d={TRANSITION_DURATION}:c1=tri:c2=tri"
-            f"[{target_a_label}]"
-        )
-        filter_parts.append(afade_cmd)
-        current_a_label = target_a_label
-
-    # === Final Fade Out to Black/Silence ===
-    # This masks the "glitch" at the end by fading out 1 second before the end.
-    FADE_OUT_DURATION = 1.0
-    fade_start_time = cumulative_duration - FADE_OUT_DURATION
-    
-    if fade_start_time < 0: fade_start_time = 0
-
-    # Apply fade out to Video (v_raw -> vout)
-    filter_parts.append(
-        f"[v_raw]fade=t=out:st={fade_start_time}:d={FADE_OUT_DURATION}[vout]"
-    )
-    
-    # Apply fade out to Audio (a_raw -> aout)
-    filter_parts.append(
-        f"[a_raw]afade=t=out:st={fade_start_time}:d={FADE_OUT_DURATION}[aout]"
-    )
-
-    full_filter = ";".join(filter_parts)
-
-    # 5. Execute Merge
-    final_output_name = f"merged_{req_id}.mp4" if req_id != 'manual_test' else "merged_mock.mp4"
+    # 5. Final Polish
+    final_output_name = f"merged_{req_id}.mp4"
     final_output_path = output_dir / final_output_name
     
-    merge_cmd = [
-        "ffmpeg", "-y",
-        *inputs,
-        "-filter_complex", full_filter,
-        "-map", "[vout]", "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",
-        "-shortest",  # Safety to cut streams if lengths mismatch
-        str(final_output_path)
-    ]
-    
-    logger.info(f"Running Final Merge: {final_output_path}")
-    result = subprocess.run(merge_cmd, capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        logger.error(f"FFmpeg Merge Failed: {result.stderr}")
-        raise RuntimeError("FFmpeg merge failed")
-        
+    add_fades(current_merged_path, str(final_output_path), current_duration)    
     logger.info(f"Successfully created: {final_output_path}")
     
     # Cleanup Temp
