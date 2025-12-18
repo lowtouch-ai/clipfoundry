@@ -561,6 +561,7 @@ def fetch_unread_emails(**kwargs):
     unread_emails = []
     max_timestamp = last_checked_timestamp
     logging.info(f"Found {len(messages)} unread messages")
+    ALLOWED_DOMAIN = "@ecloudcontrol.com"
 
     for msg in messages:
         msg_id = msg["id"]
@@ -581,6 +582,22 @@ def fetch_unread_emails(**kwargs):
 
             if sender == VIDEO_COMPANION_FROM_ADDRESS.lower():
                 logging.info(f"Skipping own email: {sender}")
+                continue
+
+            if ALLOWED_DOMAIN not in sender:
+                logging.warning(f"Unauthorized Sender: {sender}. Domain not in whitelist ({ALLOWED_DOMAIN}).")
+                
+                # IMPORTANT: Mark as READ so we don't fetch it again in the next run
+                try:
+                    service.users().messages().modify(
+                        userId="me",
+                        id=msg_id,
+                        body={"removeLabelIds": ["UNREAD"]}
+                    ).execute()
+                    logging.info(f"Marked unauthorized message {msg_id} as READ to prevent loops.")
+                except Exception as e:
+                    logging.warning(f"Failed to mark unauthorized message {msg_id} as READ: {e}")
+                
                 continue
 
             # === LYNX-STYLE: Use thread_id directly ===
