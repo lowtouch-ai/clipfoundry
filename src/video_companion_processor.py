@@ -306,24 +306,24 @@ def freemium_guard_task(**kwargs):
         ti.xcom_push(key="user_type",value="Internal")
         return "validate_input"
     
+    ti.xcom_push(key="user_type",value="external")
     # Check free tier usage
-    bucket_key = f"clipfoundry_free_daily::{email}::{today}"
+    bucket_key = f"clipfoundry_free::{email}::{today}"
     current = int(ti.xcom_pull(key=bucket_key, include_prior_dates=True) or 0)
     
-    USAGE_LIMIT = Validate.get("CF.video.external.limit",default_var=5)
-    logging.info(f"User has used {current}/{USAGE_LIMIT} free videos today")
+    USAGE_LIMIT = Variable.get("CF.video.external.limit",default_var=5)
+    logging.info(f"User has used {current}/{USAGE_LIMIT} all free videos")
     if current >= USAGE_LIMIT:
         logging.error(f"Free tier limit reached ")
         raise AirflowException(
             f"Free tier limit reached for. "
-            "You've used all 5 free videos for today. "
-            "Please upgrade or try again tomorrow."
+            "You've used all 5 free videos. "
+            "Please upgrade or try again."
         )
     
     # Increment usage counter
     ti.xcom_push(key=bucket_key, value=current + 1)
     logging.info(f"Incremented usage for to {current + 1}")
-    ti.xcom_push(key="user_type",value="external")
     
     return "validate_input"
 
@@ -910,7 +910,7 @@ def split_script_task(**context):
     text = email_data.get("content", "").strip()
     logging.info(f"{generate_script}, {text}")
     
-    user_type = ti.xcom_pull(key="user_type", task_ids="agent_input_task")
+    user_type = ti.xcom_pull(key="user_type", task_ids="freemium_guard_task")
     if user_type == "internal":
         MAX_DURATION = Variable.get("CF.video.internal.max_duration", default_var=20)
     elif user_type == "external":
