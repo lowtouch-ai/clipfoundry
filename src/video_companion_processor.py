@@ -990,6 +990,8 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
         final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
         # Pick ONE random image
         selected_image = random.choice(image_list) if image_list else None
+        image_path = selected_image.get("path") if selected_image else None
+        logging.info(f"Selected image path: {image_path}")
         logging.info(f"Images : {image_list}")
         logging.info(f"Selected images {selected_image}")
         config_item = {
@@ -1106,7 +1108,7 @@ def split_script_task(**context):
 
     # --- INPUT HANDLING ---
     
-    images = ti.xcom_pull(key='images', task_ids='agent_input_task') 
+    images = ti.xcom_pull(key='images', task_ids='agent_input') 
     # script_content = raw_data.get('script_content')
     email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
     chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
