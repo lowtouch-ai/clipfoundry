@@ -958,6 +958,7 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
     Transforms AI output into downstream config.
     NOW: Uses the 'duration' provided by the AI, with safety clamping.
     MAX_SCENES is calculated based on max_video_duration.
+    Images are cycled through sequentially instead of random selection.
     """
     # Calculate MAX_SCENES based on video duration
     # Using 8 seconds as the average scene duration for calculation
@@ -978,7 +979,7 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
     if len(segments_data) > MAX_SCENES:
         segments_data = segments_data[:MAX_SCENES]
 
-    for item in segments_data:
+    for idx, item in enumerate(segments_data):
         # Extract fields
         text = item.get("text", "").strip()
         ai_duration = float(item.get("duration", 6.0)) # Default to 6s if missing
@@ -988,14 +989,20 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
         
         # Validate/Clamp Duration
         final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
-        # Pick ONE random image
-        selected_image = random.choice(image_list) if image_list else None
-        image_path = selected_image.get("path") if selected_image else None
-        logging.info(f"Selected image path: {image_path}")
-        logging.info(f"Images : {image_list}")
-        logging.info(f"Selected images {selected_image}")
+        
+        # Cycle through images sequentially using modulo
+        selected_image = None
+        image_path = None
+        
+        if image_list:
+            # Use modulo to rotate through images
+            selected_image = image_list[idx % len(image_list)]
+            image_path = selected_image.get("path")
+        
+        logging.info(f"Scene {idx}: Selected image path: {image_path}")
+        
         config_item = {
-            "image_path": selected_image.get("path"),
+            "image_path": image_path,
             "prompt": text,
             "duration": final_duration,
             "aspect_ratio": aspect_ratio
