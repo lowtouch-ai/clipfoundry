@@ -66,6 +66,24 @@ def update_last_checked_timestamp(timestamp):
         json.dump({"last_processed": timestamp}, f)
     logging.info(f"Updated last processed timestamp: {timestamp}")
 
+def is_email_whitelisted(sender_email):
+    """Check if sender email is in the whitelist Variable."""
+    try:
+        # Fetch whitelist from Airflow Variable
+        whitelisted = json.loads(Variable.get("CF.email.whitelist", default_var="[]"))
+        
+        # Extract email from "Name <email@domain.com>" format
+        email_match = re.search(r'<(.+?)>', sender_email)
+        clean_email = email_match.group(1).lower() if email_match else sender_email.lower()
+        
+        # Check against the list
+        is_allowed = clean_email in [email.lower() for email in whitelisted]
+        logging.info(f"Email validation - Sender: {clean_email}, Whitelisted: {is_allowed}")
+        return is_allowed
+    except Exception as e:
+        logging.error(f"Error checking whitelist: {e}")
+        return False
+
 def create_workspace_for_thread(thread_id, email_id):
     """
     Create a new workspace or return existing workspace for a thread.
@@ -561,6 +579,7 @@ def fetch_unread_emails(**kwargs):
     unread_emails = []
     max_timestamp = last_checked_timestamp
     logging.info(f"Found {len(messages)} unread messages")
+    ALLOWED_DOMAIN = "@ecloudcontrol.com"
 
     for msg in messages:
         msg_id = msg["id"]
@@ -581,6 +600,22 @@ def fetch_unread_emails(**kwargs):
 
             if sender == VIDEO_COMPANION_FROM_ADDRESS.lower():
                 logging.info(f"Skipping own email: {sender}")
+                continue
+
+            if not is_email_whitelisted(sender):
+                logging.warning(f"Unauthorized Sender: {sender}. Not in whitelist.")
+                
+                # IMPORTANT: Mark as READ so we don't fetch it again in the next run
+                try:
+                    service.users().messages().modify(
+                        userId="me",
+                        id=msg_id,
+                        body={"removeLabelIds": ["UNREAD"]}
+                    ).execute()
+                    logging.info(f"Marked unauthorized message {msg_id} as READ to prevent loops.")
+                except Exception as e:
+                    logging.warning(f"Failed to mark unauthorized message {msg_id} as READ: {e}")
+                
                 continue
 
             # === LYNX-STYLE: Use thread_id directly ===

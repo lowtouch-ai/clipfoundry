@@ -87,11 +87,31 @@ class GoogleVeoVideoTool(BaseTool):
         
         full_prompt = f"""
 
-        The person in the reference image speaks clearly and naturally:
+        SYSTEM INSTRUCTION:
+        You are a professional podcast host creating an Instagram-style educational video.
+        Speak at a natural, energetic pace suitable for short-form content.
+        Target a delivery speed equivalent to approximately 170 words per minute.
+        Avoid long pauses.
+        Keep sentence transitions tight and conversational.
+        Deliver the script confidently, as if explaining to a smart but busy audience.
+        Do not slow down for dramatic effect.
+
+        This script should comfortably fit within a 60-second spoken delivery.
+        If needed, slightly increase speaking tempo rather than extending pauses.
+
+        TASK:
+        The person in the reference image speaks the following text clearly and naturally:
         "{prompt}"
 
-        # IMPOTRANT
-        - The character should be exactly match the charater in the given image
+        PACING & PERFORMANCE INSTRUCTIONS:
+        - Speak at a natural, energetic pace suitable for short-form content (approx 170 WPM).
+        - Start speaking IMMEDIATELY at frame 0. Do not nod or smile silently before speaking.
+        - Avoid long pauses between sentences. Keep transitions tight.
+        - Deliver the lines confidently.
+        - Stop animation exactly when the audio ends. No trailing silence or idle movement.
+
+        # IMPORTANT
+        - The character should exactly match the character in the given image.
         """
         
 
