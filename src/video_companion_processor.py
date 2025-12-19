@@ -1296,10 +1296,10 @@ def process_single_segment(segment, segment_index, **context):
                     'video_path': video_path
                 }
             else:
-                logging.error(f"Generation failed: {result.get('error')}")
+                raise ValueError(f"Generation failed: {result.get('error')}")
         except Exception as e:
             logging.error(f"Exception in segment {segment_index}: {str(e)}")
-            
+            raise
 
 def prepare_segments_for_expand(**context):
     """Convert segments list into format needed for expand with index tracking."""
