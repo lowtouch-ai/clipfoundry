@@ -2,7 +2,7 @@
 DAG: video_merger_pipeline
 Author: lowtouch.ai Engineering
 Description: Merges video clips with High Fidelity intermediates, Smart Audio Mapping, 
-             and Robust Transitions (Anti-Drift).
+             Robust Transitions (Anti-Drift), and Branding Watermarks.
 """
 
 import json
@@ -23,6 +23,10 @@ logger = logging.getLogger("airflow.task")
 
 # DURATION OF THE FADE (Increase to 1.0s if you want it more noticeable)
 TRANSITION_DURATION = 0.5 
+
+# WATERMARK PATHS (Ensure these exist in your shared storage)
+WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"
+WATERMARK_PATH_9_16 = "/appz/shared/branding/watermark_9_16.mp4"
 
 default_args = {
     'owner': 'lowtouch-ai',
@@ -192,9 +196,9 @@ def merge_videos_logic(**context):
 
     req_id = params.get('req_id', 'manual_test')
     valid_paths = [p for p in video_paths if os.path.exists(p)]
-    if len(valid_paths) < 2:
-        logger.warning("Need at least 2 videos to merge.")
-        return valid_paths[0] if valid_paths else None
+    if len(valid_paths) < 1: # Allow 1 video if we are just appending watermark
+        logger.warning("No valid videos to merge.")
+        return None
 
     # Setup Workspaces
     if 'work_dir' in params:
@@ -225,19 +229,51 @@ def merge_videos_logic(**context):
     current_merged_path = processed_clips[0]['path']
     current_duration = processed_clips[0]['duration']
 
-    for i in range(1, len(processed_clips)):
-        next_clip = processed_clips[i]
-        step_output = temp_dir / f"step_merge_{i}.mp4"
+    if len(processed_clips) > 1:
+        for i in range(1, len(processed_clips)):
+            next_clip = processed_clips[i]
+            step_output = temp_dir / f"step_merge_{i}.mp4"
+            
+            new_duration = merge_pair(
+                current_merged_path, 
+                next_clip['path'], 
+                str(step_output), 
+                current_duration
+            )
+            
+            current_merged_path = str(step_output)
+            current_duration = new_duration
+
+    # --- 4.5 ADD WATERMARK (BRANDING) ---
+    # Select path based on aspect ratio
+    aspect_ratio = target_w / target_h
+    if aspect_ratio > 1.0:
+        # Landscape (16:9)
+        watermark_source = WATERMARK_PATH_16_9
+    else:
+        # Portrait (9:16)
+        watermark_source = WATERMARK_PATH_9_16
+
+    if os.path.exists(watermark_source):
+        logger.info(f"Appending branding watermark: {watermark_source}")
         
+        # Standardize Watermark (ensure resolution match)
+        wm_norm_path = temp_dir / "norm_watermark.mp4"
+        wm_duration = prepare_segment(watermark_source, str(wm_norm_path), target_w, target_h)
+        
+        # Merge Watermark into final video (Transition handles fade in)
+        wm_merge_output = temp_dir / "step_merge_branding.mp4"
         new_duration = merge_pair(
-            current_merged_path, 
-            next_clip['path'], 
-            str(step_output), 
+            current_merged_path,
+            str(wm_norm_path),
+            str(wm_merge_output),
             current_duration
         )
         
-        current_merged_path = str(step_output)
+        current_merged_path = str(wm_merge_output)
         current_duration = new_duration
+    else:
+        logger.warning(f"Watermark file missing at {watermark_source}. Skipping branding.")
 
     # 5. Final Polish
     final_output_name = f"merged_{req_id}.mp4"

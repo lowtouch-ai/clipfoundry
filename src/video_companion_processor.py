@@ -51,18 +51,112 @@ You are an expert Video Production QA Assistant.
 Your only job is to strictly evaluate whether a user request contains enough information to generate a high-quality talking-head AI avatar video.
 
 Rules:
-- "has_clear_idea" = true only if the user clearly states the video type and goal (e.g., "product intro", "testimonial", "tutorial").
-- "has_script" = true only if full spoken dialogue is provided.
-- Always output valid JSON only. Never add explanations, markdown, or extra text.
+- "has_clear_idea" = true only if the user clearly states the video type and goal.
+- "request_type" = "general_query" if the user is saying "Hello", "How are you", "What is this?", "Help", or chatting casually without a specific video intent.
+- "request_type" = "video_request" if the user wants to make a video.
+- "target_duration": Extract the requested duration in seconds (integer) if mentioned (e.g., "30s", "1 minute" -> 60). If not mentioned, return null.
+- Always output valid JSON only.
 
-Required JSON format (no deviations):
+Required JSON format:
 {
+  "request_type": "video_request" | "general_query",
   "has_clear_idea": true|false,
   "has_script": true|false,
-  "idea_description": "one-sentence summary or 'unclear'",
-  "script_quality": "none|partial|complete",
-  "reasoning": "short internal note"
+  "idea_description": "summary",
+  "suggested_title": "title",
+  "tone": "tone",
+  "action": "generate_video" | "generate_script",
+  "aspect_ratio": "16:9", 
+  "resolution": "720p",
+  "target_duration": 30
 }
+"""
+
+CLIPFOUNDRY_CATALOGUE = """
+# 🎬 ClipFoundry — Video Generation Agent  
+### Your No-Code Creative Production Assistant
+
+ClipFoundry is an AI-powered video generation agent designed for creative studios, marketers, and content teams. You can send an email or chat message, attach a model photo and a background image, provide a script or simple instructions—and receive a ready-to-use stitched video, all without touching editing tools.
+
+---
+
+## 🌟 What ClipFoundry Can Do
+
+- **Turn ideas or scripts into videos**  
+  Send a script or just a high-level brief. ClipFoundry will write a clean, time-aligned script if needed.
+
+- **Generate short videos featuring your model**  
+  Using a model photo + background image, ClipFoundry produces talking-head or branded creative videos.
+
+- **Auto-edit and stitch scenes**  
+  Each scene is generated, timed, rendered, and merged into one seamless MP4.
+
+- **No-code workflow**  
+  Just send an email or message. No timeline editing. No tools. No configurations.
+
+- **Privacy-first execution**  
+  Everything runs inside an isolated appliance—no external cloud dependency.
+
+---
+
+## 🧩 How ClipFoundry Works Internally
+
+### 1. Input Collection  
+You provide:
+- A model photo  
+- A background image  
+- Either a script (`SCRIPT:`) or high-level instructions (`INSTRUCTION:`)
+
+### 2. Agent Intelligence  
+The agent:
+- Determines whether to use your script or generate one  
+- Breaks the script into time-bound scenes  
+- Selects appropriate visuals  
+- Chooses durations and pacing for each segment
+
+### 3. Airflow-Powered Video Production  
+Airflow orchestrates:
+- Script analysis  
+- Scene generation  
+- Video rendering  
+- Stitching and exporting the final MP4  
+- Sending you the download link  
+
+Shared storage acts as the central content hub.
+
+---
+
+## 💼 Who It’s Built For
+
+- Creative studios  
+- Marketing teams  
+- Social media teams  
+- Advertising agencies  
+- Enterprise brand teams  
+
+Perfect for teams producing **frequent creative refreshes**, **daily assets**, or **rapid campaign variations**.
+
+---
+
+## 🎯 Why It’s Perfect for Lowtouch.ai
+
+- Fully autonomous end-to-end agent workflow  
+- Real example of distributed orchestration across connectors, Airflow, and private model execution  
+- Demonstrates how enterprises can deploy custom digital workers inside secure infrastructure  
+- High-visibility output that is easy to test, iterate, and showcase for hackathons  
+
+---
+
+## 🚀 Ready to Create?
+
+Send:
+- A model photo  
+- A background image  
+- A script or instruction  
+
+And I’ll return your finished MP4 video.  
+Just tell me what you want to create!
+
 """
 
 def is_agent_trigger(conf):
@@ -279,7 +373,7 @@ def agent_input_task(**kwargs):
         )
     
     logging.info(f"Input extracted - Prompt length: {len(prompt)}, Images: {len(images)}")
-    return "freemium_guard_task"
+    return "freemium_guard"
 
 
 def freemium_guard_task(**kwargs):
@@ -350,11 +444,6 @@ def validate_input(**kwargs):
     if not prompt:
         missing.append("prompt/idea")
     
-    # NOTE: If you want to allow Script Generation WITHOUT images, 
-    # remove the next two lines. Currently, images are mandatory.
-    if not images:
-        missing.append("image(s)")
-    
     if missing:
         logging.warning(f"Missing required elements: {missing}")
         ti.xcom_push(key="validation_status", value="missing_elements")
@@ -404,9 +493,11 @@ USER MESSAGE: "{prompt}"
     3. "action": "generate_video" if has_script is true.
     4. "action": "generate_script" if has_script is false.
     5. Options for aspect_ratio are 9:16 and 16:9 give this based on user request
+    6. Check if the user specified a duration (e.g., "make it 20 seconds").
     Return JSON:
     ``json
     {{
+      "request_type": "video_request" | "general_query",
       "has_clear_idea": true|false,
       "has_script": true|false,
       "idea_description": "summary",
@@ -414,7 +505,8 @@ USER MESSAGE: "{prompt}"
       "tone": "tone",
       "action": "generate_video" | "generate_script",
       "aspect_ratio": "16:9", 
-      "resolution": "720p"
+      "resolution": "720p",
+      "target_duration": 30
     }}
     ```
     """
@@ -428,6 +520,30 @@ USER MESSAGE: "{prompt}"
     logging.info(f"AI Response is :{response}")
     
     analysis = extract_json_from_text(response) or {}
+    
+    # New Gatekeeper Logic
+    if analysis.get("request_type") == "general_query":
+        logging.info("General Query detected. Routing to automated reply.")
+        return "send_general_response"
+    
+    # If we are here, the user WANTS a video. Now we must ensure they provided images.
+    images = ti.xcom_pull(task_ids="agent_input", key="images") or []
+    
+    if not images:
+        logging.warning("Video Request detected, but NO IMAGES provided.")
+        
+        # Set missing elements so the email knows what to ask for
+        ti.xcom_push(key="missing_elements", value=["image(s)"])
+        
+        # Determine routing (Agent vs Email) similar to validate_input
+        agent_headers = ti.xcom_pull(task_ids="agent_input", key="agent_headers") or {}
+        email_data = ti.xcom_pull(task_ids="agent_input", key="email_data") or {}
+        is_agent = bool(agent_headers) or not bool(email_data.get("headers", {}).get("From"))
+        
+        if is_agent:
+            return "end"
+        else:
+            return "send_missing_elements_email"
     
     # Always store analysis (even if partial)
     idea_description = analysis.get("idea_description", "A short professional talking-head video")
@@ -582,6 +698,84 @@ def send_missing_elements_email(**kwargs):
     else:
         logging.info("No valid recipient email found. Skipping email send.")
 
+def send_general_response(**kwargs):
+    """Replies to general conversation (Hello, Help, etc.) via Gemini, always in Markdown."""
+    ti = kwargs['ti']
+    dag_run = kwargs.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
+    
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    prompt = email_data.get("content", "").strip()
+
+    system_instruction = f"""
+You are the ClipFoundry Video Generation Agent.
+
+You MUST ALWAYS respond in clean Markdown (no JSON, no HTML).
+
+# Behavior Rules
+
+1. **If the user sends a greeting** (e.g., “hi”, “hello”, “hey”):
+   - Reply with a warm, friendly greeting in Markdown.
+   - Briefly introduce yourself as ClipFoundry, a video generation assistant.
+   - Invite them to send a model photo, background image, and script/instructions.
+
+2. **If the user asks about capabilities**  
+   (e.g., “what can you do?”, “capabilities”, “help”, “what is this?”, “how does this work?”, “explain ClipFoundry”):
+   - Respond ONLY with the following Markdown catalogue:
+   
+{CLIPFOUNDRY_CATALOGUE}
+
+3. **For all other general inquiries**:
+   - Provide a helpful Markdown explanation of how ClipFoundry works and how to start.
+
+Your final output MUST be raw Markdown, with no JSON or backticks.
+"""
+
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        reply = client.models.generate_content(
+            model=GEMINI_MODEL,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.4
+            ),
+            contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
+        )
+        reply_text = reply.text.strip()
+    except Exception as e:
+        reply_text = "Sorry, I could not process your request."
+
+    # Remove accidental quotes
+    if reply_text.startswith('"') and reply_text.endswith('"'):
+        reply_text = reply_text[1:-1]
+
+    # ---- Push agent response ----
+    response_data = {
+        "status": "success",
+        "markdown_output": reply_text,
+        "type": "text_reply"
+    }
+    ti.xcom_push(key="generated_output", value=response_data)
+
+    # 3. Send Email (if applicable)
+    if not is_agent_trigger(conf):
+        headers = email_data.get("headers", {})
+        sender_email = headers.get("From", "")
+        if sender_email:
+            service = authenticate_gmail()
+            if service:
+                html_body = reply_text.replace("\n", "<br>")
+                send_reply_to_thread(
+                    service=service,
+                    thread_id=ti.xcom_pull(key="thread_id", task_ids="agent_input"),
+                    message_id=headers.get("Message-ID", ""),
+                    recipient=sender_email,
+                    subject=headers.get("Subject", "Re: Video Companion"),
+                    reply_html_body=f"<html><body>{html_body}</body></html>"
+                )
+    return response_data
+
 def generate_script(**kwargs):
     """Generate video script based on user's idea."""
     ti = kwargs['ti']
@@ -597,7 +791,15 @@ def generate_script(**kwargs):
     prompt = email_data.get("content", "").strip()
     idea_description = prompt_analysis.get("idea_description", "")
     target_tone = prompt_analysis.get("tone", "engaging and professional")
-    
+    requested_duration = prompt_analysis.get("target_duration")
+    # Ensure it's a valid integer, otherwise default to 45
+    if requested_duration and isinstance(requested_duration, int) and requested_duration > 5:
+        TARGET_DURATION = requested_duration
+        logging.info(f"Using user-requested duration: {TARGET_DURATION}s")
+    else:
+        TARGET_DURATION = 45
+        logging.info(f"No valid user duration found. Using default: {TARGET_DURATION}s")
+
     # Build conversation history
     conversation_history_for_ai = []
     if chat_history:
@@ -624,28 +826,21 @@ def generate_script(**kwargs):
         constraint_note = "CRITICAL: Previous script was TOO LONG. Write a significantly shorter version."
 
     # 4. Prompting
-    TARGET_DURATION = 45
+    MAX_WORDS = int((TARGET_DURATION / 60.0) * AVG_WPM)
     system_instruction = f"""
-    You are an expert Video Scriptwriter & Director with chameleonic adaptability.
-    
-    YOUR ROLE:
-    1. Analyze the requested topic and idea.
-    2. Adopt the specific persona best suited for this content (e.g., if medical, be a Doctor; if tech, be a Reviewer).
-    3. CURRENT PERSONA TARGET: You are writing in a {target_tone} style.
+    You are an expert Video Scriptwriter.
     
     PACING & DELIVERY INSTRUCTIONS (CRITICAL):
-    Regardless of the persona adopted, you must adhere to these video production standards:
-    1. Speak at a natural, energetic pace suitable for short-form video.
-    2. Target a delivery speed equivalent to approximately {AVG_WPM} words per minute.
-    3. Avoid long pauses. Keep sentence transitions tight and conversational.
-    4. Deliver the script confidently.
-    5. Do not slow down for dramatic effect unless explicitly necessary for the specific persona (but keep it rare).
-
+    1. Speak at a natural, energetic pace (approx {AVG_WPM} WPM).
+    2. STRICT LENGTH LIMIT: The script MUST NOT exceed {MAX_WORDS} words. 
+       (This ensures it fits the {TARGET_DURATION}s limit).
+    
     INSTRUCTIONS:
     1. Target: {TARGET_DURATION}s.
     2. Pace: {AVG_WPM} wpm.
-    3. Structure: Hook -> Body -> CTA.
+    3. Max Words: {MAX_WORDS}.
     4. {constraint_note}
+    
     Output JSON: {{
         "video_meta": {{ "title": "str", "video_type": "str", "target_duration": {TARGET_DURATION} }},
         "script_content": "text...",
@@ -1549,6 +1744,13 @@ with DAG(
         doc_md="Handling error"
     )
 
+    send_general_response_task = PythonOperator(
+        task_id="send_general_response",
+        python_callable=send_general_response,
+        provide_context=True,
+        doc_md="Replying to query"
+    )
+
     end_task = DummyOperator(
         task_id="end",
         trigger_rule="none_failed_min_one_success",
@@ -1612,7 +1814,9 @@ with DAG(
     validate_prompt_clarity_task >> [
         generate_script_task,
         split_script,  # Direct path when script provided
-        send_error_email_task
+        send_error_email_task,
+        send_general_response_task,
+        send_missing_elements_task
     ]
 
     # Script generation path (leads to split_script OR end)
