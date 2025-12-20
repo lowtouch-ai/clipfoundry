@@ -19,6 +19,27 @@ from google import genai
 from google.genai import types
 import uuid
 
+VEO_SYSTEM_PROMPT = """
+You are a professional podcast host creating an Instagram-style educational video.
+Speak at a natural, energetic pace suitable for short-form content.
+Target a delivery speed equivalent to approximately 170 words per minute.
+Avoid long pauses.
+Keep sentence transitions tight and conversational.
+Deliver the script confidently, as if explaining to a smart but busy audience.
+Do not slow down for dramatic effect.
+
+This script should comfortably fit within a 60-second spoken delivery.
+If needed, slightly increase speaking tempo rather than extending pauses.
+"""
+
+NEGATIVE_PROMPTS = """
+NEGATIVE CONSTRAINTS (STRICTLY FORBIDDEN):
+- NO text overlays, subtitles, captions, or watermarks. The video must be clean.
+- NO gasping for air, lip smacking, or awkward breathing pauses.
+- NO dramatic nods or excessive head bobbing. Keep head movement stable and professional.
+- NO hand gestures blocking the face.
+- NO changing the background or lighting drastically from the reference image.
+"""
 
 # ==================== MODELS ====================
 
@@ -75,7 +96,9 @@ class GoogleVeoVideoTool(BaseTool):
         duration_seconds: int = 6,
         output_dir: str = "",
         video_model: str = "veo-3.0-fast-generate-001",
-        resolution: str = "720p"
+        resolution: str = "720p",
+        segment_index: int = 0,
+        total_segments: int = 1
     ) -> Dict[str, Any]:
 
         # output_dir = "/appz/dev/test_agents/output"
@@ -83,35 +106,33 @@ class GoogleVeoVideoTool(BaseTool):
 
         image_b64 = self._image_to_base64(image_path)
 
+        continuity_instruction = "This is a standalone video. Start with a natural introduction expression."
+        if total_segments > 1:
+            if segment_index == 0:
+                continuity_instruction = f"This is Part 1 of {total_segments}. Start naturally, but END smoothly anticipating the next sentence. Do not fade out energy."
+            elif segment_index == total_segments - 1:
+                continuity_instruction = f"This is Part {total_segments} of {total_segments} (Final). Start immediately as if continuing a sentence from the previous clip. End with a natural conclusion."
+            else:
+                continuity_instruction = f"This is Part {segment_index + 1} of {total_segments} (Middle). CONTINUOUS FLOW IS CRITICAL. The video must start AND end as if in the middle of a speech. No introductory nods. No ending fades."
+
         # Smart prompt builder
         
         full_prompt = f"""
 
         SYSTEM INSTRUCTION:
-        You are a professional podcast host creating an Instagram-style educational video.
-        Speak at a natural, energetic pace suitable for short-form content.
-        Target a delivery speed equivalent to approximately 170 words per minute.
-        Avoid long pauses.
-        Keep sentence transitions tight and conversational.
-        Deliver the script confidently, as if explaining to a smart but busy audience.
-        Do not slow down for dramatic effect.
+        {VEO_SYSTEM_PROMPT}
+        
+        CONTINUITY CONTEXT:
+        {continuity_instruction}
 
-        This script should comfortably fit within a 60-second spoken delivery.
-        If needed, slightly increase speaking tempo rather than extending pauses.
+        {NEGATIVE_PROMPTS}
 
         TASK:
         The person in the reference image speaks the following text clearly and naturally:
         "{prompt}"
-
-        PACING & PERFORMANCE INSTRUCTIONS:
-        - Speak at a natural, energetic pace suitable for short-form content (approx 170 WPM).
-        - Start speaking IMMEDIATELY at frame 0. Do not nod or smile silently before speaking.
-        - Avoid long pauses between sentences. Keep transitions tight.
-        - Deliver the lines confidently.
-        - Stop animation exactly when the audio ends. No trailing silence or idle movement.
-
         # IMPORTANT
         - The character should exactly match the character in the given image.
+        - Start speaking IMMEDIATELY at frame 0.
         """
         
 

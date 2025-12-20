@@ -156,18 +156,14 @@ def merge_pair(video_a: str, video_b: str, output_path: str, duration_a: float) 
     
     return get_video_metadata(output_path)['duration']
 
-def add_fades(input_path: str, output_path: str, duration: float):
-    """Adds fade out to the final consolidated video (Distribution Quality)."""
-    FADE_DURATION = 1.0
-    start_time = duration - FADE_DURATION
-    if start_time < 0: start_time = 0
-
+def finalize_video(input_path: str, output_path: str):
+    """
+    Finalizes the video (Distribution Quality) WITHOUT applying a fade-out.
+    This ensures the branding watermark persists fully visible until the last frame.
+    """
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
-        "-vf", f"fade=t=out:st={start_time}:d={FADE_DURATION}",
-        "-af", f"afade=t=out:st={start_time}:d={FADE_DURATION}",
-        # FINAL DISTRIBUTION SETTINGS
         "-c:v", "libx264", 
         "-preset", "medium",    # Better compression for final file
         "-crf", "23",           # Standard web quality
@@ -177,7 +173,7 @@ def add_fades(input_path: str, output_path: str, duration: float):
         str(output_path)
     ]
     
-    logger.info(f"Applying final fades: {output_path}")
+    logger.info(f"Finalizing video: {output_path}")
     subprocess.run(cmd, check=True, capture_output=True)
 
 
@@ -279,7 +275,7 @@ def merge_videos_logic(**context):
     final_output_name = f"merged_{req_id}.mp4"
     final_output_path = output_dir / final_output_name
     
-    add_fades(current_merged_path, str(final_output_path), current_duration)    
+    finalize_video(current_merged_path, str(final_output_path))    
     logger.info(f"Successfully created: {final_output_path}")
     
     # Cleanup Temp
