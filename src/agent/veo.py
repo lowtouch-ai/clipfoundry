@@ -34,7 +34,8 @@ If needed, slightly increase speaking tempo rather than extending pauses.
 
 NEGATIVE_PROMPTS = """
 NEGATIVE CONSTRAINTS (STRICTLY FORBIDDEN):
-- NO text overlays, subtitles, captions, or watermarks. The video must be clean.
+- NO text overlays, subtitles, captions, chyrons, or watermarks of any kind. The video must be clean.
+- NO alphanumeric characters, letters, or numbers visible in the background or foreground.
 - NO gasping for air, lip smacking, or awkward breathing pauses.
 - NO dramatic nods or excessive head bobbing. Keep head movement stable and professional.
 - NO hand gestures blocking the face.

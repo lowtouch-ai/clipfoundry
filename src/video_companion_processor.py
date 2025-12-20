@@ -509,13 +509,16 @@ def validate_prompt_clarity(**kwargs):
     Analyze this user message to determine the next step.
 
     USER MESSAGE: "{prompt}"
+    DETECTED IMAGE RATIO: {detected_aspect_ratio}
 
     CRITICAL ROUTING RULES:
     1. "has_script": true ONLY if the user provided the EXACT VERBATIM text to be spoken.
     2. "has_script": false if the user provided an IDEA, TOPIC, or asked YOU to write the script.
     3. "action": "generate_video" if has_script is true.
     4. "action": "generate_script" if has_script is false.
-    5. "aspect_ratio": Default to "{detected_aspect_ratio}" (matches image). ONLY change if the user EXPLICITLY asks for a different format (e.g. "make it landscape", "9:16").
+    5. **ASPECT RATIO RULE (CRITICAL):** - DEFAULT to "{detected_aspect_ratio}" (to match the source image).
+       - ONLY override this if the user EXPLICITLY asks for a different format (e.g. "make it portrait", "9:16", "landscape").
+       - If the user says nothing about ratio, return "{detected_aspect_ratio}".
     6. Check if the user specified a duration (e.g., "make it 20 seconds").
     Return JSON:
     ``json
