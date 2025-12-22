@@ -20,6 +20,7 @@ import random
 from pathlib import Path
 from airflow.exceptions import AirflowException
 from datetime import date
+from PIL import Image
 # Add the parent directory to Python path
 import sys
 dag_dir = Path(__file__).parent
@@ -66,7 +67,7 @@ Required JSON format:
   "suggested_title": "title",
   "tone": "tone",
   "action": "generate_video" | "generate_script",
-  "aspect_ratio": "16:9", 
+  "aspect_ratio": "16:9" | "9:16", 
   "resolution": "720p",
   "target_duration": 30
 }
@@ -340,6 +341,27 @@ def agent_input_task(**kwargs):
     images = chat_inputs.get("files", []) or conf.get("images", [])
     
     logging.info(f"Thinking: I've received your request. I'm now analyzing the {len(images)} image(s) and your prompt to understand exactly what you need...")
+
+    detected_aspect_ratio = "16:9" # Default fallback
+    if images and len(images) > 0:
+        first_image = images[0]
+        img_path = first_image.get("path") if isinstance(first_image, dict) else first_image
+        
+        if img_path and os.path.exists(img_path):
+            try:
+                with Image.open(img_path) as img:
+                    width, height = img.size
+                    if height > width:
+                        detected_aspect_ratio = "9:16"
+                    else:
+                        detected_aspect_ratio = "16:9"
+                    
+                    logging.info(f"Detected Image Ratio: {width}x{height} -> {detected_aspect_ratio}")
+            except Exception as e:
+                logging.warning(f"Failed to detect aspect ratio: {e}")
+    
+    ti.xcom_push(key="detected_aspect_ratio", value=detected_aspect_ratio)
+
     chat_history = conf.get("chat_history", [])
     thread_id = conf.get("thread_id", "")
     message_id = conf.get("message_id", "")
@@ -469,6 +491,7 @@ def validate_prompt_clarity(**kwargs):
     chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     prompt = email_data.get("content", "").strip()
+    detected_aspect_ratio = ti.xcom_pull(key="detected_aspect_ratio", task_ids="agent_input") or "16:9"
     
     conversation_history_for_ai = []
     for i in range(0, len(chat_history), 2):
@@ -483,16 +506,19 @@ def validate_prompt_clarity(**kwargs):
     
     # Still do analysis to extract useful context (topic, tone, etc.)
     analysis_prompt = f"""
-Analyze this user message to determine the next step.
+    Analyze this user message to determine the next step.
 
-USER MESSAGE: "{prompt}"
+    USER MESSAGE: "{prompt}"
+    DETECTED IMAGE RATIO: {detected_aspect_ratio}
 
     CRITICAL ROUTING RULES:
     1. "has_script": true ONLY if the user provided the EXACT VERBATIM text to be spoken.
     2. "has_script": false if the user provided an IDEA, TOPIC, or asked YOU to write the script.
     3. "action": "generate_video" if has_script is true.
     4. "action": "generate_script" if has_script is false.
-    5. Options for aspect_ratio are 9:16 and 16:9 give this based on user request
+    5. **ASPECT RATIO RULE (CRITICAL):** - DEFAULT to "{detected_aspect_ratio}" (to match the source image).
+       - ONLY override this if the user EXPLICITLY asks for a different format (e.g. "make it portrait", "9:16", "landscape").
+       - If the user says nothing about ratio, return "{detected_aspect_ratio}".
     6. Check if the user specified a duration (e.g., "make it 20 seconds").
     Return JSON:
     ``json
@@ -504,7 +530,7 @@ USER MESSAGE: "{prompt}"
       "suggested_title": "title",
       "tone": "tone",
       "action": "generate_video" | "generate_script",
-      "aspect_ratio": "16:9", 
+      "aspect_ratio": "16:9" | "9:16", 
       "resolution": "720p",
       "target_duration": 30
     }}
@@ -1240,7 +1266,7 @@ def split_script_task(**context):
         logging.error(f"Failed pacing step: {e}")
         return []
 
-def process_single_segment(segment, segment_index, **context):
+def process_single_segment(segment, segment_index, total_segments=1, **context):
     """
     Process ONE segment at a time.
     CRITICAL: segment_index preserves the ORDER of video generation.
@@ -1283,7 +1309,9 @@ def process_single_segment(segment, segment_index, **context):
                 prompt=segment.get('prompt'),
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
-                output_dir=str(chat_cache_dir)
+                output_dir=str(chat_cache_dir),
+                segment_index=segment_index,
+                total_segments=total_segments
             )
             
             if result.get('success'):
@@ -1321,11 +1349,14 @@ def prepare_segments_for_expand(**context):
     else:
         logging.info(f"Production Mode ({video_model}): Processing all {len(segments)} segments.")
     
+    total_segments = len(segments)
+    
     # Return list of dicts with both segment and index for ordering
     return [
         {
             'segment': seg,
-            'segment_index': idx
+            'segment_index': idx,
+            'total_segments': total_segments
         } 
         for idx, seg in enumerate(segments)
     ]
@@ -1787,7 +1818,9 @@ with DAG(
         python_callable=process_single_segment,
         dag=dag,
         pool="video_processing_pool",
-        doc_md="Rendering scene"
+        doc_md="Rendering scene",
+        retries=3,
+        retry_delay=timedelta(seconds=90)
     ).expand(op_kwargs=prepare_segments.output)
 
     # Collect all videos in correct order
