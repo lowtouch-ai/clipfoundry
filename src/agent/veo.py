@@ -21,25 +21,24 @@ import uuid
 
 VEO_SYSTEM_PROMPT = """
 You are a professional podcast host creating an Instagram-style educational video.
-Speak at a natural, energetic pace suitable for short-form content.
-Target a delivery speed equivalent to approximately 170 words per minute.
-Avoid long pauses.
-Keep sentence transitions tight and conversational.
-Deliver the script confidently, as if explaining to a smart but busy audience.
-Do not slow down for dramatic effect.
-
-This script should comfortably fit within a 60-second spoken delivery.
-If needed, slightly increase speaking tempo rather than extending pauses.
+Speak at a natural, energetic pace.
+PERFORMANCE INSTRUCTIONS:
+1. Start speaking immediately at frame 0.
+2. When the script ends, hold a neutral, professional expression. DO NOT nod, smile excessively, or gasp for air after the last word.
+3. Keep the delivery tight. No long pauses between sentences.
+4. Maintain eye contact.
 """
 
 NEGATIVE_PROMPTS = """
 NEGATIVE CONSTRAINTS (STRICTLY FORBIDDEN):
-- NO text overlays, subtitles, captions, chyrons, or watermarks of any kind. The video must be clean.
-- NO alphanumeric characters, letters, or numbers visible in the background or foreground.
-- NO gasping for air, lip smacking, or awkward breathing pauses.
-- NO dramatic nods or excessive head bobbing. Keep head movement stable and professional.
-- NO hand gestures blocking the face.
-- NO changing the background or lighting drastically from the reference image.
+- TEXT, SUBTITLES, CAPTIONS, TYPOGRAPHY, WATERMARKS, LOGOS.
+- BACKGROUND MUSIC, INSTRUMENTS, SINGING, SCORE, SOUNDTRACK.
+- NON-DIEGETIC SOUNDS, CLICKS, STATIC, DISTORTION.
+- Alphanumeric characters in background or foreground.
+- Gasping, breathing noises, lip smacking, or opening mouth after speech ends.
+- Excessive head bobbing, dramatic nodding, or looking away from camera.
+- Hand gestures covering the face.
+- Morphing background.
 """
 
 # ==================== MODELS ====================
@@ -48,10 +47,11 @@ class VeoVideoInput(BaseModel):
     image_path: str = Field(..., description="Local file path to the person's reference image (face photo)")
     prompt: str = Field(..., description="Exact text the person should speak in the video")
     aspect_ratio: Optional[str] = Field("9:16", description="9:16 (vertical), 16:9 (horizontal), 1:1")
-    duration_seconds: Optional[int] = Field(8, ge=2, le=30)
+    duration_seconds: Optional[int] = Field(..., ge=2, le=30)
     resolution: Optional[str] = Field("720p", description="480p, 720p, or 1080p")
     output_dir: Optional[str] = Field(None, description="Where to save the video(s). Defaults to temp dir.")
     video_model: Optional[str] = Field("veo-3.0-fast-generate-001",description="video model")
+    voice_persona: Optional[str] = Field("Professional voice", description="Consistent voice description")
    
 class GoogleVeoVideoTool(BaseTool):
     name: str = "google_veo_generate_video_with_scene"
@@ -88,6 +88,51 @@ class GoogleVeoVideoTool(BaseTool):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
+    def _optimize_prompt(self, raw_script: str, continuity: str, voice_persona: str) -> str:
+        """Internal method to rewrite script into visual prompts using Gemini."""
+        
+        prompt_engineer_system = f"""
+        You are a Technical Director for AI Video Generation.
+        Create a detailed visual prompt for Google Veo based on the inputs.
+        
+        PERSONA:
+        {VEO_SYSTEM_PROMPT}
+
+        VOICE CONSISTENCY (CRITICAL):
+        The character MUST speak with this specific voice: "{voice_persona}"
+        
+        CONTINUITY CONTEXT:
+        {continuity}
+        
+        CRITICAL OUTPUT RULE:
+        1. Describe the visual scene, lighting, and expression in detail.
+        2. END the prompt with the exact phrase: 'Then speaking exactly: "{raw_script}"'
+        3. Do not change the script text inside the quotes.
+        4. Make sure to end the talking once the script is over, and no extra expressions or actions are being done.
+        5. No transition effects should be done in the generated video.
+        
+        OUTPUT FORMAT:
+        Raw string only. No JSON.
+
+        GLOBAL CONSTRAINTS:
+        {NEGATIVE_PROMPTS}
+        """
+        
+        try:
+            # Use the same client/key used for Veo to call Gemini Text model
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash", # Fast model for prompt engineering
+                contents=f"SCRIPT LINE: {raw_script}",
+                config=types.GenerateContentConfig(
+                    system_instruction=prompt_engineer_system,
+                    temperature=0.3
+                )
+            )
+            return response.text.strip().strip('"')
+        except Exception as e:
+            logging.error(f"Prompt optimization failed, using raw script: {e}")
+            return f"Cinematic shot of professional host, {continuity}, speaking with {voice_persona} exactly: '{raw_script}'"
+
     def _run(
         self,
         image_path: str,
@@ -98,8 +143,8 @@ class GoogleVeoVideoTool(BaseTool):
         output_dir: str = "",
         video_model: str = "veo-3.0-fast-generate-001",
         resolution: str = "720p",
-        segment_index: int = 0,
-        total_segments: int = 1
+        continuity_context: str = "",
+        voice_persona: str = "Professional voice"
     ) -> Dict[str, Any]:
 
         # output_dir = "/appz/dev/test_agents/output"
@@ -107,36 +152,11 @@ class GoogleVeoVideoTool(BaseTool):
 
         image_b64 = self._image_to_base64(image_path)
 
-        continuity_instruction = "This is a standalone video. Start with a natural introduction expression."
-        if total_segments > 1:
-            if segment_index == 0:
-                continuity_instruction = f"This is Part 1 of {total_segments}. Start naturally, but END smoothly anticipating the next sentence. Do not fade out energy."
-            elif segment_index == total_segments - 1:
-                continuity_instruction = f"This is Part {total_segments} of {total_segments} (Final). Start immediately as if continuing a sentence from the previous clip. End with a natural conclusion."
-            else:
-                continuity_instruction = f"This is Part {segment_index + 1} of {total_segments} (Middle). CONTINUOUS FLOW IS CRITICAL. The video must start AND end as if in the middle of a speech. No introductory nods. No ending fades."
-
-        # Smart prompt builder
+        # 1. Optimize the Prompt (Self-contained logic)
+        logging.info(f"Optimizing prompt with Voice Persona: {voice_persona}")
+        full_prompt = self._optimize_prompt(prompt, continuity_context, voice_persona)
+        logging.info(f"Optimized Veo Prompt: {full_prompt}")
         
-        full_prompt = f"""
-
-        SYSTEM INSTRUCTION:
-        {VEO_SYSTEM_PROMPT}
-        
-        CONTINUITY CONTEXT:
-        {continuity_instruction}
-
-        {NEGATIVE_PROMPTS}
-
-        TASK:
-        The person in the reference image speaks the following text clearly and naturally:
-        "{prompt}"
-        # IMPORTANT
-        - The character should exactly match the character in the given image.
-        - Start speaking IMMEDIATELY at frame 0.
-        """
-        
-
         config = types.GenerateVideosConfig(
             aspect_ratio=aspect_ratio,
             number_of_videos=1,
@@ -148,7 +168,7 @@ class GoogleVeoVideoTool(BaseTool):
         try:
             operation = self.client.models.generate_videos(
                 model=video_model,
-                prompt=full_prompt.strip(),
+                prompt=full_prompt,
                 image=types.Image(image_bytes=image_b64, mime_type="image/jpeg"),
                 config=config,
             )
