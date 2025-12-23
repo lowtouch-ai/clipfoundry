@@ -92,15 +92,17 @@ Your only job is to strictly evaluate whether a user request contains enough inf
 
 Rules:
 - "has_clear_idea" = true only if the user clearly states the video type and goal.
-- "request_type" = "general_query" if the user is saying "Hello", "How are you", "What is this?", "Help", or chatting casually without a specific video intent.
-- "request_type" = "video_request" if the user wants to make a video.
+- "request_type": 
+    - "approval": If the user is replying to a previous script draft with "Approved", "Looks good", "Yes", "Go ahead", "Proceed", or "Make it".
+    - "general_query": If the user is saying "Hello", "How are you", "Help", or chatting casually without video intent.
+    - "video_request": If the user wants to make a NEW video or modify an existing idea.
 - "target_duration": Extract the requested duration in seconds (integer) if mentioned (e.g., "30s", "1 minute" -> 60). If not mentioned, return null.
 - "wpm_override": Detect if the user specified a speaking pace (e.g., "fast", "slow", "180 wpm"). Convert vague terms: "Fast"->190, "Slow"->130, "Normal"->150. If explicit number given, use it. Return null if not mentioned.
 - Always output valid JSON only.
 
 Required JSON format:
 {
-  "request_type": "video_request" | "general_query",
+  "request_type": "video_request" | "general_query" | "approval",
   "has_clear_idea": true|false,
   "has_script": true|false,
   "idea_description": "summary",
@@ -681,6 +683,20 @@ def validate_prompt_clarity(**kwargs):
         logging.info("General Query detected. Routing to automated reply.")
         return "send_general_response"
     
+    if analysis.get("request_type") == "approval":
+        logging.info("✅ Approval detected. Recovering context and skipping Acknowledgement email.")
+        
+        # Pass analysis down in case there are specific overrides (like WPM)
+        ti.xcom_push(key="prompt_analysis", value={
+            "has_clear_idea": True,
+            "idea_description": "User approved previous script",
+            "aspect_ratio": detected_aspect_ratio, # Inherit from image
+            "resolution": "720p",
+            "wpm_override": analysis.get("wpm_override"),
+            "target_duration": analysis.get("target_duration")
+        })
+        return "split_script"
+    
     # If we are here, the user WANTS a video. Now we must ensure they provided images.
     images = ti.xcom_pull(task_ids="agent_input", key="images") or []
     
@@ -743,7 +759,7 @@ def send_missing_elements_email(**kwargs):
     
     email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
-    missing_elements = ti.xcom_pull(key="missing_elements", task_ids="validate_input")
+    missing_elements = ti.xcom_pull(key="missing_elements", task_ids="validate_input") or []
     agent_headers = ti.xcom_pull(key="agent_headers", task_ids="agent_input") or {}
     
     headers = email_data.get("headers", {})
@@ -756,13 +772,18 @@ def send_missing_elements_email(**kwargs):
     name_match = re.search(r'^([^<]+)', sender_email)
     if name_match:
         sender_name = name_match.group(1).strip()
-        sender_email = sender_email.split("<")[1].replace(">", "").strip()
+        if "<" in sender_email:
+            sender_email = sender_email.split("<")[1].replace(">", "").strip()
     
     subject = headers.get("Subject", "Video Generation Request")
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
     
-    missing_list = " and ".join(missing_elements)
+    if missing_elements and isinstance(missing_elements, list):
+        missing_list = " and ".join(missing_elements)
+    else:
+        # Fallback text if list is empty/None to prevent crash
+        missing_list = "the required images or prompt"
     
     html_content = f"""
 <html>
