@@ -265,6 +265,92 @@ def send_reply_to_thread(service, thread_id, message_id, recipient, subject, rep
         logging.error(f"Failed to send reply in thread {thread_id}: {e}", exc_info=True)
         raise
 
+def send_acknowledgement_email_logic(context):
+    """
+    Internal helper to send an immediate acknowledgement email.
+    Called directly inside validate_prompt_clarity.
+    """
+    ti = context['ti']
+    dag_run = context.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
+
+    # 1. Skip if triggered via Chat Agent (API)
+    if is_agent_trigger(conf):
+        logging.info("Agent trigger detected: Skipping acknowledgement email.")
+        return
+
+    # 2. Extract Email Data
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+
+    # 3. Parse Sender Name
+    sender_name = "there"
+    if "<" in sender_email:
+        sender_name = sender_email.split("<")[0].strip()
+        sender_email = sender_email.split("<")[1].replace(">", "").strip()
+    else:
+        name_match = re.search(r'^([^<]+)', sender_email)
+        if name_match:
+            sender_name = name_match.group(1).strip()
+
+    subject = headers.get("Subject", "Video Generation Request")
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+
+    # 4. Construct HTML Content
+    html_content = f"""
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .greeting {{ margin-bottom: 15px; }}
+        .info-box {{ background-color: #e2e3e5; border-left: 4px solid #383d41; padding: 15px; margin: 20px 0; }}
+        .signature {{ margin-top: 20px; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="greeting">
+        <p>Hello {sender_name},</p>
+    </div>
+    
+    <div class="info-box">
+        <strong>Request Received!</strong>
+        <p>I have successfully received your video generation request. The creative process has started.</p>
+    </div>
+    
+    <div class="message">
+        <p>Your video is currently being scripted, generated, and stitched. This process typically takes <strong>15 to 30 minutes</strong> depending on complexity.</p>
+        <p>I will send you another email with the final video attached as soon as it is ready. No further action is required from you at this time.</p>
+    </div>
+    
+    <div class="signature">
+        <p>Best regards,<br>
+        Video Companion Assistant</p>
+    </div>
+</body>
+</html>
+"""
+
+    # 5. Send Email
+    if sender_email and "@" in sender_email:
+        service = authenticate_gmail()
+        if service:
+            try:
+                original_message_id = headers.get("Message-ID", "")
+                send_reply_to_thread(
+                    service=service,
+                    thread_id=thread_id,
+                    message_id=original_message_id,
+                    recipient=sender_email,
+                    subject=subject,
+                    reply_html_body=html_content
+                )
+                logging.info(f"Acknowledgement email sent to {sender_email}")
+            except Exception as e:
+                logging.error(f"Failed to send acknowledgement email: {e}")
+
 def get_gemini_response(
     prompt: str,
     system_instruction: str | None = None,
@@ -630,6 +716,15 @@ def validate_prompt_clarity(**kwargs):
         "wpm_override": wpm_override,
         "target_duration": analysis.get("target_duration")
     })
+
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+    if sender_email and "@" in sender_email:        
+        try:
+            logging.info("Attempting to send acknowledgement email...")
+            send_acknowledgement_email_logic(kwargs)
+        except Exception as e:
+            logging.error(f"Error sending acknowledgement email: {e}")
     
     # Only skip to video if we explicitly have a script
     if has_script:
