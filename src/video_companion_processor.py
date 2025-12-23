@@ -512,16 +512,27 @@ def agent_input_task(**kwargs):
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
     # Push user email if available from agent headers
-    if sender_email:
-        ti.xcom_push(
-            key="ltai-user-email",
-            value=sender_email.strip().lower()
-        )
     if agent_headers and "X-LTAI-User" in agent_headers:
         ti.xcom_push(
             key="ltai-user-email",
             value=agent_headers["X-LTAI-User"].strip().lower()
         )
+    elif sender_email:
+        # Handle format: "Name <email@domain.com>"
+        if "<" in sender_email:
+            sender_email = sender_email.split("<")[1].replace(">", "").strip().lower()
+        else:
+            sender_email = sender_email.strip().lower()
+            
+    # Push the CLEAN email to XCom
+    if sender_email:
+        logging.info(f"Identified User Email: {sender_email}")
+        ti.xcom_push(
+            key="ltai-user-email",
+            value=sender_email
+        )
+    else:
+        logging.warning("No user email identified from inputs.")
     
     logging.info(f"Input extracted - Prompt length: {len(prompt)}, Images: {len(images)}")
     return "freemium_guard"
