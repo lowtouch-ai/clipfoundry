@@ -22,7 +22,7 @@ from airflow.utils.dates import days_ago
 logger = logging.getLogger("airflow.task")
 
 # DURATION OF THE FADE (Increase to 1.0s if you want it more noticeable)
-TRANSITION_DURATION = 0.5 
+TRANSITION_DURATION = 0.1
 
 # WATERMARK PATHS (Ensure these exist in your shared storage)
 WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"

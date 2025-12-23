@@ -47,6 +47,45 @@ GEMINI_API_KEY = Variable.get("CF.companion.gemini.api_key")
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
 GEMINI_MODEL = Variable.get("CF.companion.gemini.model", default_var="gemini-2.5-flash")
+SCRIPT_GENERATION_TEMPLATE = """
+# Your Role
+Lead Scriptwriter & Researcher — Conduct background research on the provided topic and draft a cohesive, engaging narrative script optimized for short-form video content.
+
+# Your Task
+Research the user's idea and generate a single, continuous narrative script.
+
+# Core Information
+• Topic: "{idea}"
+• Target Duration: {duration} seconds
+• Tone: {tone}
+• Max Word Count: {max_words} words (Strict Limit)
+
+# Research & Strategy
+• Analyze the Topic to identify key facts, themes, or plot points.
+• If the topic is factual (e.g., History, Science), ensure accuracy based on your knowledge base.
+• If the topic is abstract/creative, structure a logical story arc (Beginning, Middle, End).
+
+# Script Guidelines
+• Pacing: Write for a speaking rate of ~150 words per minute.
+• Structure: The script must be written as a continuous flow.
+• Formatting: Do not include visual directions, camera angles, or emojis in the spoken text. Only provide the spoken narrative (Voiceover).
+• Length Control: Ensure the word count strictly aligns with the Max Word Count.
+
+# Output Format (CRITICAL)
+You must return a valid JSON object. Do not return markdown code blocks.
+``json
+    {{
+        "video_meta": {{ 
+            "title": "A short catchy title", 
+            "video_type": "Reel/Short", 
+            "target_duration": {duration}
+        }},
+        "script_content": "The single block of clear, engaging spoken text...",
+        "visual_direction": "A brief summary of the visual style/mood for the video creator (separate from the script)."
+    }}
+    ```
+"""
+
 CLARITY_ANALYZER_SYSTEM = """
 You are an expert Video Production QA Assistant.
 Your only job is to strictly evaluate whether a user request contains enough information to generate a high-quality talking-head AI avatar video.
@@ -56,6 +95,7 @@ Rules:
 - "request_type" = "general_query" if the user is saying "Hello", "How are you", "What is this?", "Help", or chatting casually without a specific video intent.
 - "request_type" = "video_request" if the user wants to make a video.
 - "target_duration": Extract the requested duration in seconds (integer) if mentioned (e.g., "30s", "1 minute" -> 60). If not mentioned, return null.
+- "wpm_override": Detect if the user specified a speaking pace (e.g., "fast", "slow", "180 wpm"). Convert vague terms: "Fast"->190, "Slow"->130, "Normal"->150. If explicit number given, use it. Return null if not mentioned.
 - Always output valid JSON only.
 
 Required JSON format:
@@ -69,6 +109,7 @@ Required JSON format:
   "action": "generate_video" | "generate_script",
   "aspect_ratio": "16:9" | "9:16", 
   "resolution": "720p",
+  "wpm_override": 180,  // Integer or null
   "target_duration": 30
 }
 """
@@ -223,6 +264,92 @@ def send_reply_to_thread(service, thread_id, message_id, recipient, subject, rep
     except Exception as e:
         logging.error(f"Failed to send reply in thread {thread_id}: {e}", exc_info=True)
         raise
+
+def send_acknowledgement_email_logic(context):
+    """
+    Internal helper to send an immediate acknowledgement email.
+    Called directly inside validate_prompt_clarity.
+    """
+    ti = context['ti']
+    dag_run = context.get('dag_run')
+    conf = dag_run.conf if dag_run else {}
+
+    # 1. Skip if triggered via Chat Agent (API)
+    if is_agent_trigger(conf):
+        logging.info("Agent trigger detected: Skipping acknowledgement email.")
+        return
+
+    # 2. Extract Email Data
+    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
+    thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+
+    # 3. Parse Sender Name
+    sender_name = "there"
+    if "<" in sender_email:
+        sender_name = sender_email.split("<")[0].strip()
+        sender_email = sender_email.split("<")[1].replace(">", "").strip()
+    else:
+        name_match = re.search(r'^([^<]+)', sender_email)
+        if name_match:
+            sender_name = name_match.group(1).strip()
+
+    subject = headers.get("Subject", "Video Generation Request")
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+
+    # 4. Construct HTML Content
+    html_content = f"""
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .greeting {{ margin-bottom: 15px; }}
+        .info-box {{ background-color: #e2e3e5; border-left: 4px solid #383d41; padding: 15px; margin: 20px 0; }}
+        .signature {{ margin-top: 20px; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="greeting">
+        <p>Hello {sender_name},</p>
+    </div>
+    
+    <div class="info-box">
+        <strong>Request Received!</strong>
+        <p>I have successfully received your video generation request. The creative process has started.</p>
+    </div>
+    
+    <div class="message">
+        <p>Your video is currently being scripted, generated, and stitched. This process typically takes <strong>15 to 30 minutes</strong> depending on complexity.</p>
+        <p>I will send you another email with the final video attached as soon as it is ready. No further action is required from you at this time.</p>
+    </div>
+    
+    <div class="signature">
+        <p>Best regards,<br>
+        Video Companion Assistant</p>
+    </div>
+</body>
+</html>
+"""
+
+    # 5. Send Email
+    if sender_email and "@" in sender_email:
+        service = authenticate_gmail()
+        if service:
+            try:
+                original_message_id = headers.get("Message-ID", "")
+                send_reply_to_thread(
+                    service=service,
+                    thread_id=thread_id,
+                    message_id=original_message_id,
+                    recipient=sender_email,
+                    subject=subject,
+                    reply_html_body=html_content
+                )
+                logging.info(f"Acknowledgement email sent to {sender_email}")
+            except Exception as e:
+                logging.error(f"Failed to send acknowledgement email: {e}")
 
 def get_gemini_response(
     prompt: str,
@@ -520,6 +647,7 @@ def validate_prompt_clarity(**kwargs):
        - ONLY override this if the user EXPLICITLY asks for a different format (e.g. "make it portrait", "9:16", "landscape").
        - If the user says nothing about ratio, return "{detected_aspect_ratio}".
     6. Check if the user specified a duration (e.g., "make it 20 seconds").
+    7. "wpm_override": Detect if the user specified a speaking pace (e.g., "fast", "slow", "180 wpm"). Convert vague terms: "Fast"->190, "Slow"->130, "Normal"->150. If explicit number given, use it. Return null if not mentioned.
     Return JSON:
     ``json
     {{
@@ -532,6 +660,7 @@ def validate_prompt_clarity(**kwargs):
       "action": "generate_video" | "generate_script",
       "aspect_ratio": "16:9" | "9:16", 
       "resolution": "720p",
+      "wpm_override": 180,  // Integer or null
       "target_duration": 30
     }}
     ```
@@ -574,6 +703,7 @@ def validate_prompt_clarity(**kwargs):
     # Always store analysis (even if partial)
     idea_description = analysis.get("idea_description", "A short professional talking-head video")
     has_script = analysis.get("has_script", False) # Default to False if missing
+    wpm_override = analysis.get("wpm_override")
     
     ti.xcom_push(key="prompt_analysis", value={
         "has_clear_idea": True,  # We force this now
@@ -582,8 +712,19 @@ def validate_prompt_clarity(**kwargs):
         "suggested_title": analysis.get("suggested_title", "Your Video"),
         "tone": analysis.get("tone", "professional"),
         "aspect_ratio": analysis.get("aspect_ratio", "16:9"),
-        "resolution": analysis.get("resolution", "720p")
+        "resolution": analysis.get("resolution", "720p"),
+        "wpm_override": wpm_override,
+        "target_duration": analysis.get("target_duration")
     })
+
+    headers = email_data.get("headers", {})
+    sender_email = headers.get("From", "")
+    if sender_email and "@" in sender_email:        
+        try:
+            logging.info("Attempting to send acknowledgement email...")
+            send_acknowledgement_email_logic(kwargs)
+        except Exception as e:
+            logging.error(f"Error sending acknowledgement email: {e}")
     
     # Only skip to video if we explicitly have a script
     if has_script:
@@ -812,7 +953,11 @@ def generate_script(**kwargs):
     chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
-    AVG_WPM = 170
+    default_wpm = int(Variable.get("CF.script.wpm", default_var=170))
+    user_wpm_override = prompt_analysis.get("wpm_override")
+    AVG_WPM = int(user_wpm_override) if user_wpm_override else default_wpm
+    
+    logging.info(f"Using WPM: {AVG_WPM} (Source: {'User' if user_wpm_override else 'Variable'})")
     
     prompt = email_data.get("content", "").strip()
     idea_description = prompt_analysis.get("idea_description", "")
@@ -853,30 +998,19 @@ def generate_script(**kwargs):
 
     # 4. Prompting
     MAX_WORDS = int((TARGET_DURATION / 60.0) * AVG_WPM)
-    system_instruction = f"""
-    You are an expert Video Scriptwriter.
+    final_system_prompt = SCRIPT_GENERATION_TEMPLATE.format(
+        idea=prompt,
+        duration=TARGET_DURATION,
+        tone=target_tone,
+        max_words=MAX_WORDS
+    )
+    if constraint_note:
+        final_system_prompt += f"\n\n**CRITICAL CORRECTION:** {constraint_note}"
     
-    PACING & DELIVERY INSTRUCTIONS (CRITICAL):
-    1. Speak at a natural, energetic pace (approx {AVG_WPM} WPM).
-    2. STRICT LENGTH LIMIT: The script MUST NOT exceed {MAX_WORDS} words. 
-       (This ensures it fits the {TARGET_DURATION}s limit).
-    
-    INSTRUCTIONS:
-    1. Target: {TARGET_DURATION}s.
-    2. Pace: {AVG_WPM} wpm.
-    3. Max Words: {MAX_WORDS}.
-    4. {constraint_note}
-    
-    Output JSON: {{
-        "video_meta": {{ "title": "str", "video_type": "str", "target_duration": {TARGET_DURATION} }},
-        "script_content": "text...",
-        "visual_direction": "text..."
-    }}
-    """
     user_prompt = f"IDEA: {prompt}\nSUMMARY: {idea_description}\nGenerate script."
 
     # 5. Generate & Parse
-    response_text = get_gemini_response(user_prompt, system_instruction, conversation_history_for_ai)
+    response_text = get_gemini_response(user_prompt, final_system_prompt, conversation_history_for_ai)
     data = extract_json_from_text(response_text)
     
     if not data or "script_content" not in data:
@@ -988,15 +1122,15 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
     """
     # Calculate MAX_SCENES based on video duration
     # Using 8 seconds as the average scene duration for calculation
-    AVERAGE_SCENE_DURATION = 8.0
+    AVERAGE_SCENE_DURATION = 6.0
     MAX_SCENES = math.ceil(max_video_duration / AVERAGE_SCENE_DURATION)
     
     # Ensure at least 1 scene
     MAX_SCENES = max(1, MAX_SCENES)
     
     # Safety Limits (In case AI hallucinates a 20s or 1s duration)
-    ABSOLUTE_MIN = 5.0
-    ABSOLUTE_MAX = 10.0
+    VALID_VEO_DURATIONS = [4, 6, 8]
+    TARGET_WPM = 180.0
     
     final_config = []
     image_list = images
@@ -1008,13 +1142,13 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
     for idx, item in enumerate(segments_data):
         # Extract fields
         text = item.get("text", "").strip()
-        ai_duration = float(item.get("duration", 6.0)) # Default to 6s if missing
         
         # Clean text
         text = re.sub(r'^(Narrator|Speaker|Scene \d+):?\s*', '', text, flags=re.IGNORECASE).strip()
+        word_count = len(text.split())
+        calculated_duration = (word_count / TARGET_WPM) * 60.0
         
-        # Validate/Clamp Duration
-        final_duration = max(ABSOLUTE_MIN, min(ai_duration, ABSOLUTE_MAX))
+        final_duration = min(VALID_VEO_DURATIONS, key=lambda x: abs(x - calculated_duration))
         
         # Cycle through images sequentially using modulo
         selected_image = None
@@ -1030,7 +1164,7 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
         config_item = {
             "image_path": image_path,
             "prompt": text,
-            "duration": final_duration,
+            "duration": int(round(final_duration)),
             "aspect_ratio": aspect_ratio
         }
         final_config.append(config_item)
@@ -1285,6 +1419,16 @@ def process_single_segment(segment, segment_index, total_segments=1, **context):
     
     logging.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
     video_model = Variable.get('CF.video.model', default_var='mock')
+
+    voice_persona = ti.xcom_pull(key="voice_persona", task_ids="prepare_segments")
+    continuity_instruction = "Standalone clip."
+    if total_segments > 1:
+        if segment_index == 0:
+            continuity_instruction = f"Part 1/{total_segments}. Start energetic. END ABRUPTLY while speaking."
+        elif segment_index == total_segments - 1:
+            continuity_instruction = f"Part {total_segments}/{total_segments}. Start mid-motion. End with definitive stop."
+        else:
+            continuity_instruction = f"Part {segment_index + 1}/{total_segments}. Middle. CONTINUOUS FLOW. Start mid-motion. End mid-motion."
     
     if video_model == 'mock':
         mock_list_raw = Variable.get('CF.mock_list', default_var='[]')
@@ -1310,8 +1454,8 @@ def process_single_segment(segment, segment_index, total_segments=1, **context):
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
                 output_dir=str(chat_cache_dir),
-                segment_index=segment_index,
-                total_segments=total_segments
+                continuity_context=continuity_instruction,
+                voice_persona=voice_persona
             )
             
             if result.get('success'):
@@ -1333,10 +1477,54 @@ def prepare_segments_for_expand(**context):
     """Convert segments list into format needed for expand with index tracking."""
     ti = context['ti']
     segments = ti.xcom_pull(task_ids='split_script', key='segments')
+    images = ti.xcom_pull(task_ids='agent_input', key='images')
     
     if not segments:
         logging.warning("No segments found!")
         return []
+    
+    # --- Generate Consistent Voice Persona ---
+    voice_persona = "Professional narration voice." # Default
+    
+    if images and len(images) > 0:
+        # We always use the FIRST image as the anchor for the voice identity
+        ref_image_path = images[0].get("path") if isinstance(images[0], dict) else images[0]
+        
+        if ref_image_path and os.path.exists(ref_image_path):
+            logging.info(f"Analyzing {ref_image_path} for voice consistency...")
+            try:
+                # Initialize Gemini Client (reuse key)
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                
+                # Load Image
+                with open(ref_image_path, "rb") as f:
+                    img_bytes = f.read()
+                
+                # Prompt for Voice Description
+                voice_prompt = """
+                Analyze the person in this image. Describe the voice that perfectly matches their appearance.
+                Focus on: Gender, Age, Tone, Pitch, and Accent.
+                Format: A short, precise phrase.
+                Example: "Deep, gravelly voice of an elderly American man." 
+                """
+                
+                response = client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=[
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_text(text=voice_prompt),
+                                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+                            ]
+                        )
+                    ]
+                )
+                voice_persona = response.text.strip()
+                logging.info(f"✅ Established Voice Persona: {voice_persona}")
+                
+            except Exception as e:
+                logging.error(f"Failed to generate voice persona: {e}")
     
     video_model = Variable.get('CF.video.model', default_var='mock')
     
@@ -1356,7 +1544,8 @@ def prepare_segments_for_expand(**context):
         {
             'segment': seg,
             'segment_index': idx,
-            'total_segments': total_segments
+            'total_segments': total_segments,
+            'voice_persona': voice_persona
         } 
         for idx, seg in enumerate(segments)
     ]
@@ -1725,6 +1914,7 @@ with DAG(
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
+    max_active_runs=3,
     doc_md=readme_content,
     tags=["video", "companion", "processor", "conversational"]
 ) as dag:
