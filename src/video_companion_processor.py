@@ -523,10 +523,6 @@ def agent_input_task(**kwargs):
             sender_email = sender_email.split("<")[1].replace(">", "").strip().lower()
         else:
             sender_email = sender_email.strip().lower()
-            
-    # Push the CLEAN email to XCom
-    if sender_email:
-        logging.info(f"Identified User Email: {sender_email}")
         ti.xcom_push(
             key="ltai-user-email",
             value=sender_email
