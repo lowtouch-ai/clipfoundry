@@ -1427,171 +1427,7 @@ def split_script_task(**context):
     except Exception as e:
         logging.error(f"Failed pacing step: {e}")
         return []
-def check_pg13_content(**kwargs):
-    """
-    Check if the generated video content is PG-13 appropriate.
-    Uses Gemini to analyze the script for inappropriate content.
-    """
-    ti = kwargs['ti']
-    
-    # Get the final script
-    final_script = ti.xcom_pull(key="final_script", task_ids="validate_prompt_clarity")
-    if not final_script:
-        final_script = ti.xcom_pull(key="generated_script", task_ids="generate_script")
-    
-    if not final_script:
-        logging.warning("No script found for PG-13 check. Proceeding with caution.")
-        ti.xcom_push(key="pg13_status", value="unknown")
-        return "prepare_segments"
-    
-    logging.info("Thinking: Reviewing the content to ensure it's appropriate for all audiences...")
-    
-    # Content moderation prompt
-    moderation_prompt = f"""
-    Analyze the following video script for content appropriateness.
-    
-    SCRIPT:
-    {final_script}
-    
-    Check for:
-    1. Violence or graphic content
-    2. Sexual content or innuendo
-    3. Strong profanity
-    4. Drug/alcohol references
-    5. Discriminatory language
-    6. Other mature themes
-    
-    Return JSON with:
-    {{
-        "is_pg13": true/false,
-        "rating": "G" | "PG" | "PG-13" | "R",
-        "concerns": ["list of any issues found"],
-        "explanation": "brief explanation"
-    }}
-    """
-    
-    system_instruction = """
-    You are a content moderation expert for video platforms.
-    Evaluate scripts based on standard content rating guidelines.
-    Be thorough but reasonable in your assessment.
-    """
-    
-    try:
-        response = get_gemini_response(
-            prompt=moderation_prompt,
-            system_instruction=system_instruction,
-            temperature=0.2
-        )
-        
-        moderation_result = extract_json_from_text(response)
-        
-        if not moderation_result:
-            logging.error("Failed to parse moderation response")
-            ti.xcom_push(key="pg13_status", value="unknown")
-            return "prepare_segments"
-        
-        is_pg13 = moderation_result.get("is_pg13", True)
-        rating = moderation_result.get("rating", "PG-13")
-        concerns = moderation_result.get("concerns", [])
-        
-        ti.xcom_push(key="pg13_status", value="pass" if is_pg13 else "fail")
-        ti.xcom_push(key="content_rating", value=rating)
-        ti.xcom_push(key="content_concerns", value=concerns)
-        ti.xcom_push(key="moderation_result", value=moderation_result)
-        
-        logging.info(f"Content Rating: {rating}, PG-13: {is_pg13}")
-        
-        if not is_pg13:
-            logging.warning(f"Content concerns found: {concerns}")
-            return "send_content_warning_email"
-        
-        logging.info("Thinking: Content check passed! The video is appropriate for general audiences.")
-        return "prepare_segments"
-        
-    except Exception as e:
-        logging.error(f"Content moderation error: {e}")
-        ti.xcom_push(key="pg13_status", value="error")
-        return "prepare_segments"
-    
-def send_content_warning_email(**kwargs):
-    """Send email warning about content that's not PG-13."""
-    ti = kwargs['ti']
-    dag_run = kwargs.get('dag_run')
-    conf = dag_run.conf if dag_run else {}
-    
-    # Skip if agent trigger
-    if is_agent_trigger(conf):
-        logging.info("Agent trigger: Skipping content warning email.")
-        return
-    
-    email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
-    moderation_result = ti.xcom_pull(key="moderation_result", task_ids="check_pg13_content")
-    
-    headers = email_data.get("headers", {})
-    sender_email = headers.get("From", "")
-    sender_name = "there"
-    
-    if "<" in sender_email:
-        sender_name = sender_email.split("<")[0].strip()
-        sender_email = sender_email.split("<")[1].replace(">", "").strip()
-    
-    rating = moderation_result.get("rating", "Unknown")
-    concerns = moderation_result.get("concerns", [])
-    explanation = moderation_result.get("explanation", "Content may not be suitable for all audiences")
-    
-    concerns_html = "<br>".join([f"• {c}" for c in concerns])
-    
-    subject = headers.get("Subject", "Video Generation Request")
-    if not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}"
-    
-    html_content = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #ff6b35;">⚠️ Content Warning</h2>
-        
-        <p>Hello {sender_name},</p>
-        
-        <p>Your video script has been analyzed for content appropriateness.</p>
-        
-        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
-            <strong>Content Rating: {rating}</strong>
-            <p>{explanation}</p>
-        </div>
-        
-        <div style="margin: 20px 0;">
-            <strong>Concerns Identified:</strong><br>
-            {concerns_html}
-        </div>
-        
-        <p>You can:</p>
-        <ul>
-            <li>Modify your script to make it more appropriate</li>
-            <li>Accept the current rating and proceed</li>
-            <li>Contact support if you believe this is an error</li>
-        </ul>
-        
-        <p>If you'd like to proceed anyway, reply with "PROCEED" and I'll continue with video generation.</p>
-        
-        <p>Best regards,<br>Video Companion Assistant</p>
-    </div>
-    """
-    
-    service = authenticate_gmail()
-    if service and sender_email:
-        thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
-        original_message_id = headers.get("Message-ID", "")
-        
-        send_reply_to_thread(
-            service=service,
-            thread_id=thread_id,
-            message_id=original_message_id,
-            recipient=sender_email,
-            subject=subject,
-            reply_html_body=html_content
-        )
-        
-        logging.info(f"Content warning email sent to {sender_email}")
-        
+
 def process_single_segment(segment, segment_index, total_segments=1, **context):
     """
     Process ONE segment at a time.
@@ -2187,20 +2023,6 @@ with DAG(
         doc_md="Breaking down script"
     )
 
-    check_pg13_task = BranchPythonOperator(
-        task_id='check_pg13_content',
-        python_callable=check_pg13_content,
-        dag=dag,
-        doc_md="Checking content rating"
-    )
-
-    send_content_warning_task = PythonOperator(
-        task_id='send_content_warning_email',
-        python_callable=send_content_warning_email,
-        dag=dag,
-        doc_md="Sending content warning"
-    )
-
     prepare_segments = PythonOperator(
         task_id='prepare_segments',
         python_callable=prepare_segments_for_expand,
@@ -2261,10 +2083,8 @@ with DAG(
     generate_script_task >> split_script
     generate_script_task >> end_task
 
-    split_script >> check_pg13_task >> [prepare_segments, send_content_warning_task]
-    # Video processing pipeline (starts from prepare_segments)
-    prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task
-    send_content_warning_task >> end_task
+    # Video processing pipeline (starts from split_script)
+    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task 
 
     # Error/completion paths
     send_missing_elements_task >> end_task
