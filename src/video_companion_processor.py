@@ -1158,7 +1158,7 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
     
     # Safety Limits (In case AI hallucinates a 20s or 1s duration)
     VALID_VEO_DURATIONS = [4, 6, 8]
-    TARGET_WPM = 180.0
+    TARGET_WPM = 170.0
     
     final_config = []
     image_list = images
@@ -1176,7 +1176,20 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
         word_count = len(text.split())
         calculated_duration = (word_count / TARGET_WPM) * 60.0
         
-        final_duration = min(VALID_VEO_DURATIONS, key=lambda x: abs(x - calculated_duration))
+        # Find the smallest valid duration that fits the text.
+        # If text is longer than 8s, clamp to 8s (Veo max).
+        final_duration = 8 
+        for d in sorted(VALID_VEO_DURATIONS):
+            if d >= (calculated_duration * 1.1):
+                final_duration = d
+                break
+        
+        # Safety buffer: If calculated is very close to the limit (e.g. 3.9s), bump to next tier
+        # to account for pauses/breath.
+        if final_duration == 4 and calculated_duration > 3.5:
+            final_duration = 6
+        elif final_duration == 6 and calculated_duration > 5.5:
+            final_duration = 8
         
         # Cycle through images sequentially using modulo
         selected_image = None
@@ -1188,12 +1201,18 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
             image_path = selected_image.get("path")
         
         logging.info(f"Scene {idx}: Selected image path: {image_path}")
+
+        # Extract the new fields we added to the prompt
+        environment = item.get("environment", "Professional cinematic background")
+        emotion = item.get("emotion", "Neutral professional")
         
         config_item = {
             "image_path": image_path,
             "prompt": text,
             "duration": int(round(final_duration)),
-            "aspect_ratio": aspect_ratio
+            "aspect_ratio": aspect_ratio,
+            "environment": environment,
+            "emotion": emotion
         }
         final_config.append(config_item)
 
@@ -1276,28 +1295,27 @@ def split_script_task(**context):
     """
 
     SYSTEM_PROMPT_FORMATTER = """
-    You are a Video Pacing Expert.
-    Refine segments for TTS (Text-to-Speech).
+    You are a Video Pacing & Direction Expert for a TALKING HEAD video.
+    
+    TASK: Convert script lines into video production segments for a single speaker.
     
     CRITICAL RULES:
-    1. **AVOID FRAGMENTATION**: Do not leave single words (like "Alien.", "Ancient.") as their own segments. Merge them with the previous or next phrase.
-    2. **OPTIMAL LENGTH**: Target 6-12 words per segment. (Max 15 words).
-    3. **ASSIGN DURATION**: For each segment, you must assign a specific duration in seconds.
-    - **MINIMUM**: 6 seconds
-    - **MAXIMUM**: 8 seconds
-    - Logic: Use 6s for shorter punchy lines, 8s for longer descriptive lines.
-    - RULE: Do not use fractions only give 6 or 8 seconds as input.
-    4. **PAD IF NEEDED**: If a segment cannot be merged, slightly rewrite it to be more descriptive to increase duration.
-    * Input: "Mars Horizon."
-    * Output: "Witness the revelation of the red planet in Mars Horizon."
-    5. **NATURAL FLOW**: Group short, dramatic phrases together.
-    * BAD: ["Until now.", "An anomaly."]
-    * GOOD: ["Until now, an anomaly waits beneath the sands."]
-    6. **OUTPUT FORMAT**: Return a JSON list of objects.
-    Example:
+    1. **DURATION**: Assign 4s, 6s or 8s (no fractions).
+    2. **CONTEXT**: For each segment, describe the **background environment** for the speaker.
+       - **CONSTRAINT**: The video is a continuous shot of the speaker.
+       - **DO NOT** describe montages, split-screens, text overlays, infographics, or visual metaphors.
+       - **DO NOT** describe B-roll (e.g., "cars driving", "people walking").
+       - **KEEP IT CONSISTENT**: For the 'environment' field, you MUST output exactly this string: "The exact background from the reference image. Static and unchanged."
+       - **EMOTION**: Describe the speaker's facial expression and delivery tone.
+    
+    OUTPUT FORMAT: JSON List of Objects
     [
-        { "text": "Until now, a strange ancient anomaly waits beneath.", "duration": 6 },
-        { "text": "Witness the revelation of the red planet.", "duration": 6 }
+      { 
+        "text": "Until now, a strange ancient anomaly waits beneath.", 
+        "duration": 6,
+        "environment": "Dimly lit server room background, depth of field",
+        "emotion": "Mysterious, intense, whispering"
+      }
     ]
     """
 
@@ -1428,7 +1446,7 @@ def split_script_task(**context):
         logging.error(f"Failed pacing step: {e}")
         return []
 
-def process_single_segment(segment, segment_index, total_segments=1, **context):
+def process_single_segment(segment, segment_index, voice_persona, total_segments=1, **context):
     """
     Process ONE segment at a time.
     CRITICAL: segment_index preserves the ORDER of video generation.
@@ -1448,15 +1466,34 @@ def process_single_segment(segment, segment_index, total_segments=1, **context):
     logging.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
     video_model = Variable.get('CF.video.model', default_var='mock')
 
-    voice_persona = ti.xcom_pull(key="voice_persona", task_ids="prepare_segments")
-    continuity_instruction = "Standalone clip."
+    base_instruction = "Maintain consistent eye contact. Keep head position stable in center frame."
+    
     if total_segments > 1:
         if segment_index == 0:
-            continuity_instruction = f"Part 1/{total_segments}. Start energetic. END ABRUPTLY while speaking."
+            # FIRST CLIP: Hook the audience, then stabilize for the cut.
+            continuity_instruction = (
+                f"Part 1/{total_segments} (Intro). Start with an engaging smile and high energy. "
+                f"{base_instruction} "
+                "CRITICAL ENDING: Finish speaking, then hold a gentle smile and freeze posture for the last second."
+            )
         elif segment_index == total_segments - 1:
-            continuity_instruction = f"Part {total_segments}/{total_segments}. Start mid-motion. End with definitive stop."
+            # LAST CLIP: Pick up smooth, end with a definitive sign-off.
+            continuity_instruction = (
+                f"Part {total_segments}/{total_segments} (Outro). Start speaking immediately. "
+                f"{base_instruction} "
+                "CRITICAL ENDING: Deliver the final line with authority, then hold a confident smile. Do not look away."
+            )
         else:
-            continuity_instruction = f"Part {segment_index + 1}/{total_segments}. Middle. CONTINUOUS FLOW. Start mid-motion. End mid-motion."
+            # MIDDLE CLIPS: The "Bridge". Must look identical to start/end of neighbors.
+            continuity_instruction = (
+                f"Part {segment_index + 1}/{total_segments} (Body). "
+                f"{base_instruction} "
+                "CRITICAL FLOW: Start speaking immediately. Do not tilt head or move hands wildly. "
+                "At the end, hold the final pose perfectly still to allow for a seamless cut."
+            )
+    else:
+        # SINGLE CLIP: Standard behavior
+        continuity_instruction = "Standalone clip. Start engaging, deliver line, end with a smile."
     
     if video_model == 'mock':
         mock_list_raw = Variable.get('CF.mock_list', default_var='[]')
@@ -1475,6 +1512,12 @@ def process_single_segment(segment, segment_index, total_segments=1, **context):
         logging.info(f"Using Google Veo 3.0 for segment {segment_index}")
         try:
             veo_tool = GoogleVeoVideoTool(api_key=GEMINI_API_KEY)
+
+            # Construct the scene context from the segment data
+            # This combines Environment + Emotion for the "Scene" component
+            env = segment.get('environment', '')
+            emo = segment.get('emotion', '')
+            scene_context_str = f"{env}. Atmosphere is {emo}"
             
             result = veo_tool._run(
                 image_path=segment.get('image_path'),
@@ -1483,7 +1526,8 @@ def process_single_segment(segment, segment_index, total_segments=1, **context):
                 duration_seconds=segment.get('duration', 6),
                 output_dir=str(chat_cache_dir),
                 continuity_context=continuity_instruction,
-                voice_persona=voice_persona
+                voice_persona=voice_persona,
+                scene_context=scene_context_str
             )
             
             if result.get('success'):
@@ -1507,42 +1551,45 @@ def prepare_segments_for_expand(**context):
     segments = ti.xcom_pull(task_ids='split_script', key='segments')
     images = ti.xcom_pull(task_ids='agent_input', key='images')
     
+    client = genai.Client(api_key=GEMINI_API_KEY)
     if not segments:
         logging.warning("No segments found!")
         return []
     
-    # --- Generate Consistent Voice Persona ---
-    voice_persona = "Professional narration voice." # Default
+    character_prompt = """
+    Analyze the person in this image. Create a dense, static visual profile for a video generation AI.
+    Include these 15+ attributes:
+    1. Age & Gender
+    2. Ethnicity & Skin Tone
+    3. Hair (Color, Style, Length, Texture)
+    4. Eyes (Color, Shape)
+    5. Face Shape & Distinctive Features
+    6. Body Build (Height, Weight, Type)
+    7. Exact Clothing (Color, Material, Fit)
+    8. Grooming & Accessories
+    
+    OUTPUT FORMAT:
+    Return a single raw string describing the subject. No labels, just the description.
+    Example:
+    "A 30-year-old Japanese male with short spiked black hair, dark brown almond eyes, wearing a navy blue tailored suit jacket over a white crisp shirt, slim build, clean-shaven, serious professional expression."
+    """
     
     if images and len(images) > 0:
         # We always use the FIRST image as the anchor for the voice identity
         ref_image_path = images[0].get("path") if isinstance(images[0], dict) else images[0]
         
         if ref_image_path and os.path.exists(ref_image_path):
-            logging.info(f"Analyzing {ref_image_path} for voice consistency...")
+            logging.info(f"Analyzing {ref_image_path} for visual character consistency...")
             try:
-                # Initialize Gemini Client (reuse key)
-                client = genai.Client(api_key=GEMINI_API_KEY)
-                
-                # Load Image
                 with open(ref_image_path, "rb") as f:
                     img_bytes = f.read()
-                
-                # Prompt for Voice Description
-                voice_prompt = """
-                Analyze the person in this image. Describe the voice that perfectly matches their appearance.
-                Focus on: Gender, Age, Tone, Pitch, and Accent.
-                Format: A short, precise phrase.
-                Example: "Deep, gravelly voice of an elderly American man." 
-                """
-                
                 response = client.models.generate_content(
                     model="gemini-2.0-flash",
                     contents=[
                         types.Content(
                             role="user",
                             parts=[
-                                types.Part.from_text(text=voice_prompt),
+                                types.Part.from_text(text=character_prompt),
                                 types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
                             ]
                         )
