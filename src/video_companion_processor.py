@@ -1460,7 +1460,7 @@ def check_pg13_content(**kwargs):
     4. Drug/alcohol references
     5. Discriminatory language
     6. Other mature themes
-    **Return true if any PG-13 issues are found, otherwise false.**
+    
     Return JSON with:
     {{
         "is_pg13": true/false,
