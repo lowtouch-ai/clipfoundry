@@ -1429,8 +1429,9 @@ def split_script_task(**context):
         return []
 def check_pg13_content(**kwargs):
     """
-    Check if the generated video content is PG-13 appropriate.
+    Check if the generated video content is PG-13 or above.
     Uses Gemini to analyze the script for inappropriate content.
+    Returns true if PG-13 or above (R, NC-17), false if below PG-13 (G, PG).
     """
     ti = kwargs['ti']
     
@@ -1441,7 +1442,7 @@ def check_pg13_content(**kwargs):
     
     if not final_script:
         logging.warning("No script found for PG-13 check. Proceeding with caution.")
-        ti.xcom_push(key="pg13_status", value="unknown")
+        ti.xcom_push(key="is_mature_content", value=False)
         return "prepare_segments"
     
     logging.info("Thinking: Reviewing the content to ensure it's appropriate for all audiences...")
@@ -1460,11 +1461,11 @@ def check_pg13_content(**kwargs):
     4. Drug/alcohol references
     5. Discriminatory language
     6. Other mature themes
-    **Return true if any PG-13 issues are found, otherwise false.**
+    
     Return JSON with:
     {{
-        "is_pg13": true/false,
-        "rating": "G" | "PG" | "PG-13" | "R",
+        "rating": "G" | "PG" | "PG-13" | "R" | "NC-17",
+        "is_mature": true/false (true if PG-13 or above, false if G or PG),
         "concerns": ["list of any issues found"],
         "explanation": "brief explanation"
     }}
@@ -1474,6 +1475,12 @@ def check_pg13_content(**kwargs):
     You are a content moderation expert for video platforms.
     Evaluate scripts based on standard content rating guidelines.
     Be thorough but reasonable in your assessment.
+    Rating definitions:
+    - G: General audiences, all ages
+    - PG: Parental guidance suggested, some material may not be suitable for children
+    - PG-13: Parents strongly cautioned, some material may be inappropriate for children under 13
+    - R: Restricted, under 17 requires accompanying parent or adult guardian
+    - NC-17: No one 17 and under admitted
     """
     
     try:
@@ -1487,30 +1494,36 @@ def check_pg13_content(**kwargs):
         
         if not moderation_result:
             logging.error("Failed to parse moderation response")
-            ti.xcom_push(key="pg13_status", value="unknown")
+            ti.xcom_push(key="is_mature_content", value=False)
             return "prepare_segments"
         
-        is_pg13 = moderation_result.get("is_pg13", True)
-        rating = moderation_result.get("rating", "PG-13")
+        rating = moderation_result.get("rating", "PG")
+        is_mature = moderation_result.get("is_mature", False)
         concerns = moderation_result.get("concerns", [])
+        explanation = moderation_result.get("explanation", "")
         
-        ti.xcom_push(key="pg13_status", value="pass" if is_pg13 else "fail")
+        # Define mature content ratings (PG-13 and above)
+        mature_ratings = ["PG-13", "R", "NC-17"]
+        is_mature_content = rating in mature_ratings or is_mature
+        
+        ti.xcom_push(key="is_mature_content", value=is_mature_content)
         ti.xcom_push(key="content_rating", value=rating)
         ti.xcom_push(key="content_concerns", value=concerns)
         ti.xcom_push(key="moderation_result", value=moderation_result)
         
-        logging.info(f"Content Rating: {rating}, PG-13: {is_pg13}")
+        logging.info(f"Content Rating: {rating}, Is Mature (PG-13+): {is_mature_content}")
         
-        if not is_pg13:
-            logging.warning(f"Content concerns found: {concerns}")
+        if is_mature_content:
+            logging.warning(f"Mature content detected (PG-13 or above). Concerns: {concerns}")
+            logging.info(f"Explanation: {explanation}")
             return "send_content_warning_email"
         
-        logging.info("Thinking: Content check passed! The video is appropriate for general audiences.")
+        logging.info("Thinking: Content check passed! The video is appropriate for general audiences (G/PG).")
         return "prepare_segments"
         
     except Exception as e:
         logging.error(f"Content moderation error: {e}")
-        ti.xcom_push(key="pg13_status", value="error")
+        ti.xcom_push(key="is_mature_content", value=False)
         return "prepare_segments"
     
 def send_content_warning_email(**kwargs):
