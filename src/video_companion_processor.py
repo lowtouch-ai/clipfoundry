@@ -464,6 +464,7 @@ def agent_input_task(**kwargs):
     # 2. Unified Extraction Strategy
     # Check Chat Inputs first (Agent), then fallback to Email Data
     prompt = chat_inputs.get("message", "") or email_data.get("content", "")
+    chat_history = chat_inputs.get("history", [])
     prompt = prompt.strip()
     
     # Images might be in 'files' (Agent) or 'images' (Email/Direct)
@@ -491,7 +492,6 @@ def agent_input_task(**kwargs):
     
     ti.xcom_push(key="detected_aspect_ratio", value=detected_aspect_ratio)
 
-    chat_history = conf.get("chat_history", [])
     thread_id = conf.get("thread_id", "")
     message_id = conf.get("message_id", "")
     
@@ -1622,6 +1622,7 @@ def send_content_warning_email(**kwargs):
         )
         
         logging.info(f"Content warning email sent to {sender_email}")
+        return {"status": "success", "video_path": result} 
         
 def process_single_segment(segment, segment_index, voice_persona, total_segments=1, **context):
     """
