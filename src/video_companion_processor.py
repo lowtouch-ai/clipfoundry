@@ -1623,7 +1623,7 @@ def send_content_warning_email(**kwargs):
         
         logging.info(f"Content warning email sent to {sender_email}")
         
-def process_single_segment(segment, segment_index, voice_persona, total_segments=1, **context
+def process_single_segment(segment, segment_index, voice_persona, total_segments=1, **context):
     """
     Process ONE segment at a time.
     CRITICAL: segment_index preserves the ORDER of video generation.
