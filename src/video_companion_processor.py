@@ -2246,7 +2246,19 @@ with DAG(
         trigger_rule="none_failed_min_one_success",
         doc_md="Breaking down script"
     )
+    check_pg13_task = BranchPythonOperator(
+        task_id='check_pg13_content',
+        python_callable=check_pg13_content,
+        dag=dag,
+        doc_md="Checking content rating"
+    )
 
+    send_content_warning_task = PythonOperator(
+        task_id='send_content_warning_email',
+        python_callable=send_content_warning_email,
+        dag=dag,
+        doc_md="Sending content warning"
+    )
     prepare_segments = PythonOperator(
         task_id='prepare_segments',
         python_callable=prepare_segments_for_expand,
@@ -2307,9 +2319,10 @@ with DAG(
     generate_script_task >> split_script
     generate_script_task >> end_task
 
-    # Video processing pipeline (starts from split_script)
-    split_script >> prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task 
-
+    split_script >> check_pg13_task >> [prepare_segments, send_content_warning_task]
+    # Video processing pipeline (starts from prepare_segments)
+    prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task
+    send_content_warning_task
     # Error/completion paths
     send_missing_elements_task >> end_task
     send_error_email_task >> end_task
