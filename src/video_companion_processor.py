@@ -242,14 +242,34 @@ def upload_file_to_minio(local_path, chat_id, filename):
         raise
 
 def download_file_from_minio(object_name, local_path):
-    """Downloads a file from MinIO."""
+    """Downloads a file from MinIO, handling full S3 URIs."""
     client = get_minio_client()
     try:
-        client.fget_object(MINIO_BUCKET, object_name, local_path)
-        logging.info(f"Downloaded {object_name} to {local_path}")
+        # --- FIX: Clean the object name ---
+        bucket_to_use = MINIO_BUCKET
+        clean_object_name = object_name
+
+        # If the path is a full S3 URI, parse it
+        if object_name.startswith("s3://"):
+            # Remove s3://
+            path_without_scheme = object_name[5:]
+            # Split bucket and key
+            parts = path_without_scheme.split("/", 1)
+            if len(parts) == 2:
+                bucket_to_use = parts[0]
+                clean_object_name = parts[1]
+            else:
+                # Fallback or error if format is weird
+                clean_object_name = path_without_scheme
+        
+        logging.info(f"Downloading from Bucket: {bucket_to_use}, Key: {clean_object_name}")
+        
+        client.fget_object(bucket_to_use, clean_object_name, local_path)
+        logging.info(f"Downloaded {clean_object_name} to {local_path}")
         return local_path
     except Exception as e:
         logging.error(f"MinIO Download failed: {e}")
+        # We explicitly raise here so the task fails/retries if essential files are missing
         raise
 
 def is_agent_trigger(conf):
@@ -524,6 +544,18 @@ def agent_input_task(**kwargs):
     if images and len(images) > 0:
         first_image = images[0]
         img_path = first_image.get("path") if isinstance(first_image, dict) else first_image
+
+        if img_path and img_path.startswith("s3://"):
+            try:
+                temp_dir = Path(CACHE_ROOT) / "temp_input_check"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                local_temp_path = temp_dir / os.path.basename(img_path)
+                
+                # Download just for checking
+                download_file_from_minio(img_path, str(local_temp_path))
+                img_path = str(local_temp_path) # Update to local path for PIL
+            except Exception as e:
+                logging.warning(f"Could not download input image for ratio check: {e}")
         
         if img_path and os.path.exists(img_path):
             try:
@@ -1549,9 +1581,6 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
     if image_path and image_path.startswith("s3://"):
         logging.info(f"Detected S3 image path: {image_path}. Downloading to local cache...")
         try:
-            # Parse S3 URI to get the object name. 
-            # Format: s3://bucket_name/object_name
-            # We assume the bucket matches MINIO_BUCKET, so we just strip the prefix and bucket.
             bucket_name = Variable.get("CF_MINIO_BUCKET", default_var="clipfoundry")
             
             # Robust parsing
@@ -1618,8 +1647,6 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
                 continuity_context=continuity_instruction,
                 voice_persona=voice_persona,
                 scene_context=scene_context_str
-                segment_index=segment_index,
-                total_segments=total_segments
             )
             
             if result.get('success'):
@@ -1688,6 +1715,19 @@ def prepare_segments_for_expand(**context):
     if images and len(images) > 0:
         # We always use the FIRST image as the anchor for the voice identity
         ref_image_path = images[0].get("path") if isinstance(images[0], dict) else images[0]
+        # Handle S3/MinIO Paths
+        if ref_image_path and ref_image_path.startswith("s3://"):
+            try:
+                # Create a unique temp path
+                import uuid
+                temp_dir = Path(CACHE_ROOT) / f"persona_{uuid.uuid4()}"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                local_ref_path = temp_dir / os.path.basename(ref_image_path)
+                
+                download_file_from_minio(ref_image_path, str(local_ref_path))
+                ref_image_path = str(local_ref_path) # Update variable to local path
+            except Exception as e:
+                logging.error(f"Failed to download reference image for persona: {e}")
         
         if ref_image_path and os.path.exists(ref_image_path):
             logging.info(f"Analyzing {ref_image_path} for visual character consistency...")
@@ -1838,7 +1878,7 @@ def send_video(**kwargs):
     # Check if this is an agent trigger - if so, just return the path
     if is_agent_trigger(conf):
         logging.info("Agent trigger detected: Skipping video email.")
-        return {"video_path": video_path,"status":"success"}
+        return {"video_path": str(video_path),"status":"success"}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
