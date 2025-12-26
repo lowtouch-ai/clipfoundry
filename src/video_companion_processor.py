@@ -1534,7 +1534,7 @@ def check_pg13_content(**kwargs):
         if is_mature_content:
             logging.warning(f"Mature content detected (PG-13 or above). Concerns: {concerns}")
             logging.info(f"Explanation: {explanation}")
-            return "send_content_warning_email"
+            return "send_content_warning"
         
         logging.info("Thinking: Content check passed! The video is appropriate for general audiences (G/PG).")
         return "prepare_segments"
@@ -1544,7 +1544,7 @@ def check_pg13_content(**kwargs):
         ti.xcom_push(key="is_mature_content", value=False)
         return "prepare_segments"
     
-def send_content_warning_email(**kwargs):
+def send_content_warning(**kwargs):
     """Send email warning about content that's not PG-13."""
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
@@ -1622,7 +1622,7 @@ def send_content_warning_email(**kwargs):
         )
         
         logging.info(f"Content warning email sent to {sender_email}")
-        return {"status": "success", "video_path": result} 
+        raise AirflowException(f"Content moderation failed. Concerns: {concerns_html}")
         
 def process_single_segment(segment, segment_index, voice_persona, total_segments=1, **context):
     """
@@ -2254,9 +2254,9 @@ with DAG(
         doc_md="Checking content rating"
     )
 
-    send_content_warning_task = PythonOperator(
-        task_id='send_content_warning_email',
-        python_callable=send_content_warning_email,
+    send_content_warning = PythonOperator(
+        task_id='send_content_warning',
+        python_callable=send_content_warning,
         dag=dag,
         doc_md="Sending content warning"
     )
@@ -2320,10 +2320,10 @@ with DAG(
     generate_script_task >> split_script
     generate_script_task >> end_task
 
-    split_script >> check_pg13_task >> [prepare_segments, send_content_warning_task]
+    split_script >> check_pg13_task >> [prepare_segments, send_content_warning]
     # Video processing pipeline (starts from prepare_segments)
     prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task
-    send_content_warning_task
+    send_content_warning
     # Error/completion paths
     send_missing_elements_task >> end_task
     send_error_email_task >> end_task
