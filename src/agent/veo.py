@@ -29,17 +29,7 @@ PERFORMANCE INSTRUCTIONS:
 4. Maintain eye contact.
 """
 
-NEGATIVE_PROMPTS = """
-NEGATIVE CONSTRAINTS (STRICTLY FORBIDDEN):
-- TEXT, SUBTITLES, CAPTIONS, TYPOGRAPHY, WATERMARKS, LOGOS.
-- BACKGROUND MUSIC, INSTRUMENTS, SINGING, SCORE, SOUNDTRACK.
-- NON-DIEGETIC SOUNDS, CLICKS, STATIC, DISTORTION.
-- Alphanumeric characters in background or foreground.
-- Gasping, breathing noises, lip smacking, or opening mouth after speech ends.
-- Excessive head bobbing, dramatic nodding, or looking away from camera.
-- Hand gestures covering the face.
-- Morphing background.
-"""
+STRICT_NEGATIVE_PROMPT = "text, subtitles, captions, typography, watermark, logo, blurry, distorted, morphing, bad audio, music, background noise"
 
 # ==================== MODELS ====================
 
@@ -88,50 +78,47 @@ class GoogleVeoVideoTool(BaseTool):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
-    def _optimize_prompt(self, raw_script: str, continuity: str, voice_persona: str) -> str:
-        """Internal method to rewrite script into visual prompts using Gemini."""
-        
-        prompt_engineer_system = f"""
-        You are a Technical Director for AI Video Generation.
-        Create a detailed visual prompt for Google Veo based on the inputs.
-        
-        PERSONA:
-        {VEO_SYSTEM_PROMPT}
-
-        VOICE CONSISTENCY (CRITICAL):
-        The character MUST speak with this specific voice: "{voice_persona}"
-        
-        CONTINUITY CONTEXT:
-        {continuity}
-        
-        CRITICAL OUTPUT RULE:
-        1. Describe the visual scene, lighting, and expression in detail.
-        2. END the prompt with the exact phrase: 'Then speaking exactly: "{raw_script}"'
-        3. Do not change the script text inside the quotes.
-        4. Make sure to end the talking once the script is over, and no extra expressions or actions are being done.
-        5. No transition effects should be done in the generated video.
-        
-        OUTPUT FORMAT:
-        Raw string only. No JSON.
-
-        GLOBAL CONSTRAINTS:
-        {NEGATIVE_PROMPTS}
+    def _construct_meta_prompt(self, raw_script: str, character_desc: str, context: str, continuity: str) -> str:
         """
-        
-        try:
-            # Use the same client/key used for Veo to call Gemini Text model
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash", # Fast model for prompt engineering
-                contents=f"SCRIPT LINE: {raw_script}",
-                config=types.GenerateContentConfig(
-                    system_instruction=prompt_engineer_system,
-                    temperature=0.3
-                )
-            )
-            return response.text.strip().strip('"')
-        except Exception as e:
-            logging.error(f"Prompt optimization failed, using raw script: {e}")
-            return f"Cinematic shot of professional host, {continuity}, speaking with {voice_persona} exactly: '{raw_script}'"
+        Constructs the strict 7-Component Meta Prompt for Veo 3.
+        """
+        # Component 1: Subject (From Character Analysis Task)
+        subject_block = f"Subject: {character_desc}"
+
+        # Component 2: Action (From Continuity + Script context)
+        # We assume specific lip-sync is handled by model, but we define body language.
+        action_block = f"Action: {continuity}. The character speaks naturally."
+
+        # Component 3: Scene (Extracted or Default)
+        # We append the specific camera anchor required by Veo 3 framework
+        scene_block = f"Scene: {context} (thats where the camera is)."
+
+        # Component 4: Style (Cinematography)
+        style_block = "Style: Cinematic lighting, 50mm lens, shallow depth of field, high fidelity, 1080p, broadcast quality."
+
+        # Component 5: Dialogue (Strict Colon Syntax to prevent subtitles)
+        # "Character: 'Line'" format
+        dialogue_block = f'Dialogue: The character looks at the camera and says: "{raw_script}"'
+
+        # Component 6: Sounds (Prevent Hallucinations)
+        # Explicitly separate speech from environment
+        sounds_block = "Sounds: Clear speech only. No background music. Room tone matches environment."
+
+        # Assemble the Block
+        final_prompt = f"""
+{subject_block}
+
+{action_block}
+
+{scene_block}
+
+{style_block}
+
+{dialogue_block}
+
+{sounds_block}
+        """
+        return final_prompt.strip()
 
     def _run(
         self,
@@ -144,7 +131,8 @@ class GoogleVeoVideoTool(BaseTool):
         video_model: str = "veo-3.0-fast-generate-001",
         resolution: str = "720p",
         continuity_context: str = "",
-        voice_persona: str = "Professional voice"
+        voice_persona: str = "Professional voice",
+        scene_context: str = "Professional studio lighting" # New arg passed from Airflow
     ) -> Dict[str, Any]:
 
         # output_dir = "/appz/dev/test_agents/output"
@@ -152,23 +140,31 @@ class GoogleVeoVideoTool(BaseTool):
 
         image_b64 = self._image_to_base64(image_path)
 
-        # 1. Optimize the Prompt (Self-contained logic)
-        logging.info(f"Optimizing prompt with Voice Persona: {voice_persona}")
-        full_prompt = self._optimize_prompt(prompt, continuity_context, voice_persona)
-        logging.info(f"Optimized Veo Prompt: {full_prompt}")
+        # 1. Construct the 7-Component Meta Prompt
+        # We bypass the LLM "optimizer" and build it deterministically for control
+        meta_prompt = self._construct_meta_prompt(
+            raw_script=prompt,
+            character_desc=voice_persona,
+            context=scene_context,
+            continuity=continuity_context
+        )
         
+        logging.info(f"🚀 Veo 3 Meta Prompt:\n{meta_prompt}")
+        
+        # 2. Configure Veo 3
         config = types.GenerateVideosConfig(
             aspect_ratio=aspect_ratio,
             number_of_videos=1,
             duration_seconds=duration_seconds,
             person_generation="ALLOW_ADULT",
-            resolution=resolution
+            resolution=resolution,
+            negative_prompt=STRICT_NEGATIVE_PROMPT
         )
 
         try:
             operation = self.client.models.generate_videos(
                 model=video_model,
-                prompt=full_prompt,
+                prompt=meta_prompt,
                 image=types.Image(image_bytes=image_b64, mime_type="image/jpeg"),
                 config=config,
             )
