@@ -21,6 +21,11 @@ from pathlib import Path
 from airflow.exceptions import AirflowException
 from datetime import date
 from PIL import Image
+
+from minio import Minio
+from minio.error import S3Error
+
+
 # Add the parent directory to Python path
 import sys
 dag_dir = Path(__file__).parent
@@ -44,6 +49,13 @@ SHARED_ROOT = "/appz/shared"
 CACHE_ROOT = "/appz/cache"
 LOGS_ROOT = "/appz/logs"
 GEMINI_API_KEY = Variable.get("CF.companion.gemini.api_key")
+# --- ADD/UPDATE CONFIGURATION ---
+# MinIO Configuration (Add these vars to your Airflow Admin -> Variables)
+MINIO_ENDPOINT = Variable.get("CF_MINIO_ENDPOINT", default_var="minio:9000")
+MINIO_ACCESS_KEY = Variable.get("CF_MINIO_USER", default_var="minioadmin")
+MINIO_SECRET_KEY = Variable.get("CF_MINIO_PASSWORD", default_var="minioadmin")
+MINIO_BUCKET = Variable.get("CF_MINIO_BUCKET", default_var="clipfoundry")
+MINIO_SECURE = Variable.get("MINIO_SECURE", default_var="False").lower() == "true"
 
 # Use the appropriate Gemini model (e.g. gemini-1.5-flash or gemini-1.5-pro)
 GEMINI_MODEL = Variable.get("CF.companion.gemini.model", default_var="gemini-2.5-flash")
@@ -202,6 +214,43 @@ And I’ll return your finished MP4 video.
 Just tell me what you want to create!
 
 """
+
+def get_minio_client():
+    """Initialize MinIO client on demand (inside tasks)."""
+    client = Minio(
+        MINIO_ENDPOINT,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=MINIO_SECURE
+    )
+    return client
+
+def upload_file_to_minio(local_path, chat_id, filename):
+    """Uploads a local file to MinIO."""
+    client = get_minio_client()
+    try:
+        # Check bucket existence here, inside the task/worker
+        if not client.bucket_exists(MINIO_BUCKET):
+             client.make_bucket(MINIO_BUCKET)
+             
+        object_name = f"{chat_id}/{filename}"
+        client.fput_object(MINIO_BUCKET, object_name, local_path)
+        logging.info(f"Uploaded {local_path} to s3://{MINIO_BUCKET}/{object_name}")
+        return object_name
+    except Exception as e:
+        logging.error(f"MinIO Upload failed: {e}")
+        raise
+
+def download_file_from_minio(object_name, local_path):
+    """Downloads a file from MinIO."""
+    client = get_minio_client()
+    try:
+        client.fget_object(MINIO_BUCKET, object_name, local_path)
+        logging.info(f"Downloaded {object_name} to {local_path}")
+        return local_path
+    except Exception as e:
+        logging.error(f"MinIO Download failed: {e}")
+        raise
 
 def is_agent_trigger(conf):
     """Returns True if triggered by Agent (or missing 'From' header), False if Email."""
@@ -1494,7 +1543,48 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
     else:
         # SINGLE CLIP: Standard behavior
         continuity_instruction = "Standalone clip. Start engaging, deliver line, end with a smile."
+
+    # --- FIX START: Handle S3 Image Paths ---
+    image_path = segment.get('image_path')
+    if image_path and image_path.startswith("s3://"):
+        logging.info(f"Detected S3 image path: {image_path}. Downloading to local cache...")
+        try:
+            # Parse S3 URI to get the object name. 
+            # Format: s3://bucket_name/object_name
+            # We assume the bucket matches MINIO_BUCKET, so we just strip the prefix and bucket.
+            bucket_name = Variable.get("CF_MINIO_BUCKET", default_var="clipfoundry")
+            
+            # Robust parsing
+            path_no_scheme = image_path.replace("s3://", "")
+            parts = path_no_scheme.split("/", 1) # Split into [bucket, key]
+            
+            if len(parts) == 2:
+                # remote_bucket = parts[0] # Not used if we assume configured bucket
+                object_name = parts[1]
+                
+                # Define local filename
+                local_filename = f"seg_{segment_index}_{os.path.basename(object_name)}"
+                local_dest_path = chat_cache_dir / local_filename
+                
+                # Download
+                download_file_from_minio(object_name, str(local_dest_path))
+                
+                # Update image_path to the local path for the Veo tool
+                image_path = str(local_dest_path)
+                logging.info(f"Image downloaded to local path: {image_path}")
+            else:
+                logging.warning(f"Could not parse S3 path structure: {image_path}")
+        except Exception as e:
+            logging.error(f"Failed to download image from S3: {e}")
+            raise
+    # --- FIX END ---
+
+    logging.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
+    video_model = Variable.get('CF.video.model', default_var='mock')
     
+    video_path = None
+
+    # --- 1. Generate Video (Mock or Veo) ---
     if video_model == 'mock':
         mock_list_raw = Variable.get('CF.mock_list', default_var='[]')
         mock_list = json.loads(mock_list_raw) if mock_list_raw else []
@@ -1520,7 +1610,7 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
             scene_context_str = f"{env}. Atmosphere is {emo}"
             
             result = veo_tool._run(
-                image_path=segment.get('image_path'),
+                image_path=image_path, # <--- Use the updated local variable
                 prompt=segment.get('prompt'),
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
@@ -1528,22 +1618,43 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
                 continuity_context=continuity_instruction,
                 voice_persona=voice_persona,
                 scene_context=scene_context_str
+                segment_index=segment_index,
+                total_segments=total_segments
             )
             
             if result.get('success'):
                 video_path = result['video_paths'][0]
                 logging.info(f"✅ Generated segment {segment_index}: {video_path}")
-                
-                logging.info(f"Thinking: Scene {segment_index + 1} is successfully rendered and ready.")
-                return {
-                    'index': segment_index,
-                    'video_path': video_path
-                }
             else:
                 raise ValueError(f"Generation failed: {result.get('error')}")
         except Exception as e:
             logging.error(f"Exception in segment {segment_index}: {str(e)}")
             raise
+
+    # --- 2. Upload to MinIO (Critical Update) ---
+    if video_path and os.path.exists(video_path):
+        try:
+            filename = f"scene_{segment_index}_{os.path.basename(video_path)}"
+            
+            # Use helper function to upload
+            minio_key = upload_file_to_minio(video_path, chat_id, filename)
+            
+            logging.info(f"Thinking: Scene {segment_index + 1} is successfully rendered and archived to storage.")
+            logging.info(f"Scene {segment_index} moved to Object Storage: {minio_key}")
+            
+            # Optional: Remove local file to save space on worker node
+            # os.remove(video_path) 
+
+            return {
+                'index': segment_index,
+                'minio_key': minio_key,
+                'status': 'success'
+            }
+        except Exception as e:
+            logging.error(f"Failed to upload segment {segment_index} to MinIO: {e}")
+            raise
+    else:
+        raise ValueError(f"Video generation failed, file not found: {video_path}")
 
 def prepare_segments_for_expand(**context):
     """Convert segments list into format needed for expand with index tracking."""
@@ -1644,92 +1755,85 @@ def collect_and_merge_videos(**context):
     
     # Sort by index to maintain correct order
     sorted_results = sorted(segment_results, key=lambda x: x['index'])
+    # Extract MinIO Keys
+    video_keys = [result['minio_key'] for result in sorted_results if 'minio_key' in result]
     
-    # Extract video paths in order
-    video_paths = [result['video_path'] for result in sorted_results]
-    
-    logging.info(f"📹 Video paths in order: {video_paths}")
-    
-    # Validate all videos exist
-    valid_paths = [p for p in video_paths if p and Path(p).exists()]
-    
-    if len(valid_paths) < len(video_paths):
-        logging.warning(f"⚠️ Some videos are missing. Expected {len(video_paths)}, found {len(valid_paths)}")
-    
-    if len(valid_paths) < 1:
-        logging.error("❌ Need at least 1 videos to proceed with merge.")
+    if len(video_keys) < 1:
         raise ValueError("Insufficient videos for merge")
+
+    req_id = context['dag_run'].run_id
     
-    # Generate request ID for merge
-    req_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
-    # Push to XCom for merge task
     merge_params = {
-        'video_paths': valid_paths,
+        'video_keys': video_keys, # Renamed from video_paths
         'req_id': req_id
     }
     
     ti.xcom_push(key='merge_params', value=merge_params)
-    
-    logging.info(f"✅ Ready to merge {len(valid_paths)} videos with req_id: {req_id}")
-    
-    logging.info(f"Thinking: All {len(valid_paths)} scenes are rendered. I am collecting them now to prepare for the final edit.")
+    logging.info(f"✅ Ready to merge {len(video_keys)} videos with req_id: {req_id}")
+    logging.info(f"Thinking: All {len(video_keys)} scenes are rendered. I am collecting them now to prepare for the final edit.")
     return merge_params
 
 def merge_videos_wrapper(**context):
-    """
-    Wrapper to call the existing merge logic from video_merger_pipeline.
-    """
     ti = context['ti']
     dag_run = context['dag_run']
     conf = dag_run.conf or {}
+    chat_id = conf.get("chat_inputs", {}).get("chat_id", f"run_{dag_run.run_id}")
     
-    # --- NEW: Path Derivation ---
-    chat_id = conf.get("chat_inputs", {}).get("chat_id", "manual_run")
-    chat_cache_dir = Path(CACHE_ROOT) / chat_id
-    chat_shared_dir = Path(SHARED_ROOT) / chat_id
-    
-    # Get merge parameters
     merge_params = ti.xcom_pull(task_ids='collect_videos', key='merge_params')
-    
-    if not merge_params:
-        raise ValueError("No merge parameters found")
-    
-    # Inject paths for the merger script
-    merge_params['work_dir'] = str(chat_cache_dir)
-    merge_params['output_dir'] = str(chat_shared_dir)
-    
-    logging.info(f"🎬 Starting merge with params: {merge_params} in {chat_cache_dir}, output to {chat_shared_dir}")
-    
-    logging.info(f"Thinking: Stitching all the scenes together into a seamless final video...")
-    # Import the merge logic from the other DAG
-    # You might need to adjust the import path based on your structure
-    from ffmpg_merger import merge_videos_logic
-    
-    # Create a modified context with params
-    modified_context = context.copy()
-    modified_context['params'] = merge_params
-    
-    # Call the merge function
-    result = merge_videos_logic(**modified_context)
-    # result = "/appz/home/airflow/dags/video_v1.mp4"
-    ti.xcom_push(key="generated_video_path", value=result)
-    logging.info(f"✅ Merge complete! Output: {result}")
-    logging.info(f"Thinking: The final video is rendered! Adding final touches and preparing for delivery.")
-    
-    return {"status": "success", "video_path": result}
+    video_keys = merge_params.get('video_keys', [])
+
+    # Create temp directory
+    import shutil
+    import uuid
+    temp_dir = Path(CACHE_ROOT) / f"merge_{chat_id}_{uuid.uuid4()}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # 1. Download all segments
+        local_video_paths = []
+        for key in video_keys:
+            filename = key.split('/')[-1]
+            local_dest = temp_dir / filename
+            download_file_from_minio(key, str(local_dest))
+            local_video_paths.append(str(local_dest))
+        
+        # 2. Update params for local merger
+        merge_params['video_paths'] = local_video_paths
+        merge_params['work_dir'] = str(temp_dir)
+        merge_params['output_dir'] = str(temp_dir)
+        
+        # 3. Run Merger
+        from ffmpg_merger import merge_videos_logic
+        modified_context = context.copy()
+        modified_context['params'] = merge_params
+        
+        local_result_path = merge_videos_logic(**modified_context)
+        
+        # 4. Upload Final Video
+        final_filename = f"final_{chat_id}.mp4"
+        final_key = upload_file_to_minio(local_result_path, chat_id, final_filename)
+        
+        ti.xcom_push(key="generated_video_key", value=final_key)
+        
+        return {"status": "success", "minio_key": final_key}
+
+    finally:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
 
 def send_video(**kwargs):
     """Send generated video to user."""
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
-    
+    video_key = ti.xcom_pull(key="generated_video_key", task_ids="merge_all_videos")
     email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
     message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
-    
+    import uuid
+    video_path = Path(CACHE_ROOT) / f"attachment_{uuid.uuid4()}.mp4"
+    download_file_from_minio(video_key, str(video_path))
     logging.info("Thinking: Sending the final generated video now.")
     # Check if this is an agent trigger - if so, just return the path
     if is_agent_trigger(conf):
