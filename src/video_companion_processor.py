@@ -1872,13 +1872,13 @@ def send_video(**kwargs):
     thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
     import uuid
-    video_path = Path(CACHE_ROOT) / f"attachment_{uuid.uuid4()}.mp4"
+    video_path = Path(SHARED_ROOT) / f"attachment_{uuid.uuid4()}.mp4"
     download_file_from_minio(video_key, str(video_path))
     logging.info("Thinking: Sending the final generated video now.")
     # Check if this is an agent trigger - if so, just return the path
     if is_agent_trigger(conf):
         logging.info("Agent trigger detected: Skipping video email.")
-        return {"video_path": str(video_path),"status":"success"}
+        return {"video_path": str(video_path),"minio_key": video_key, "status":"success"}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
