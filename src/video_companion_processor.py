@@ -465,6 +465,7 @@ def agent_input_task(**kwargs):
     # Check Chat Inputs first (Agent), then fallback to Email Data
     prompt = chat_inputs.get("message", "") or email_data.get("content", "")
     chat_history = chat_inputs.get("history", [])
+    logging.info(f"Chat History Length: {len(chat_history)}")
     prompt = prompt.strip()
     
     # Images might be in 'files' (Agent) or 'images' (Email/Direct)
@@ -1751,7 +1752,7 @@ def prepare_segments_for_expand(**context):
     Example:
     "A 30-year-old Japanese male with short spiked black hair, dark brown almond eyes, wearing a navy blue tailored suit jacket over a white crisp shirt, slim build, clean-shaven, serious professional expression."
     """
-    
+    voice_persona = "Default professional voice"
     if images and len(images) > 0:
         # We always use the FIRST image as the anchor for the voice identity
         ref_image_path = images[0].get("path") if isinstance(images[0], dict) else images[0]
