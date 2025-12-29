@@ -16,17 +16,15 @@ from googleapiclient.discovery import build
 import re
 from google import genai
 from google.genai import types
-import random
 from pathlib import Path
 from airflow.exceptions import AirflowException
-from datetime import date
 from PIL import Image
 # Add the parent directory to Python path
 import sys
 dag_dir = Path(__file__).parent
 sys.path.insert(0, str(dag_dir))
 from agent.veo import GoogleVeoVideoTool
-
+from models.gemini import get_gemini_response
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -353,50 +351,50 @@ def send_acknowledgement_email_logic(context):
             except Exception as e:
                 logging.error(f"Failed to send acknowledgement email: {e}")
 
-def get_gemini_response(
-    prompt: str,
-    system_instruction: str | None = None,
-    conversation_history: list[dict[str, str]] | None = None,
-    temperature: float = 0.7,
-) -> str:
-    """
-    Call Google Gemini model with optional system instruction and chat history.
+# def get_gemini_response(
+#     prompt: str,
+#     system_instruction: str | None = None,
+#     conversation_history: list[dict[str, str]] | None = None,
+#     temperature: float = 0.7,
+# ) -> str:
+#     """
+#     Call Google Gemini model with optional system instruction and chat history.
 
-    Args:
-        prompt: The current user message/query.
-        system_instruction: Optional system prompt to guide model behavior/persona.
-        conversation_history: List of previous turns → [{"prompt": ..., "response": ...}]
-        temperature: Creativity level (0.0 – 1.0).
+#     Args:
+#         prompt: The current user message/query.
+#         system_instruction: Optional system prompt to guide model behavior/persona.
+#         conversation_history: List of previous turns → [{"prompt": ..., "response": ...}]
+#         temperature: Creativity level (0.0 – 1.0).
 
-    Returns:
-        Model response as string.
-    """
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+#     Returns:
+#         Model response as string.
+#     """
+#     try:
+#         client = genai.Client(api_key=GEMINI_API_KEY)
         
-        contents_payload = []
-        if conversation_history:
-            for turn in conversation_history:
-                contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=turn["prompt"])]))
-                contents_payload.append(types.Content(role="model", parts=[types.Part.from_text(text=turn["response"])]))
+#         contents_payload = []
+#         if conversation_history:
+#             for turn in conversation_history:
+#                 contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=turn["prompt"])]))
+#                 contents_payload.append(types.Content(role="model", parts=[types.Part.from_text(text=turn["response"])]))
         
-        contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+#         contents_payload.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                temperature=temperature
-            ),
-            contents=contents_payload
-        )
-        return response.text
-    except Exception as e:
-        logging.error(f"Gemini API error: {e}", exc_info=True)
-        error_msg = f"AI request failed: {str(e)}"
-        # Return a JSON string on error for consistency with JSON mime type
-        return json.dumps({"error": error_msg})
+#         response = client.models.generate_content(
+#             model=GEMINI_MODEL,
+#             config=types.GenerateContentConfig(
+#                 system_instruction=system_instruction,
+#                 response_mime_type="application/json",
+#                 temperature=temperature
+#             ),
+#             contents=contents_payload
+#         )
+#         return response.text
+#     except Exception as e:
+#         logging.error(f"Gemini API error: {e}", exc_info=True)
+#         error_msg = f"AI request failed: {str(e)}"
+#         # Return a JSON string on error for consistency with JSON mime type
+#         return json.dumps({"error": error_msg})
 
 def extract_json_from_text(text):
     """Extract JSON from text."""
@@ -664,6 +662,7 @@ def validate_prompt_clarity(**kwargs):
       "request_type": "video_request" | "general_query",
       "has_clear_idea": true|false,
       "has_script": true|false,
+      "negative_prompt": <list of any disallowed elements as comma separated string>,
       "idea_description": "summary",
       "suggested_title": "title",
       "tone": "tone",
@@ -680,7 +679,9 @@ def validate_prompt_clarity(**kwargs):
     response = get_gemini_response(
         prompt=analysis_prompt,
         system_instruction=CLARITY_ANALYZER_SYSTEM,
-        conversation_history=conversation_history_for_ai
+        conversation_history=conversation_history_for_ai,
+        api_key=GEMINI_API_KEY,
+        model=GEMINI_MODEL
     )
     logging.info(f"AI Response is :{response}")
     
@@ -701,7 +702,8 @@ def validate_prompt_clarity(**kwargs):
             "aspect_ratio": detected_aspect_ratio, # Inherit from image
             "resolution": "720p",
             "wpm_override": analysis.get("wpm_override"),
-            "target_duration": analysis.get("target_duration")
+            "target_duration": analysis.get("target_duration"),
+            "negative_prompt": analysis.get("negative_prompt", "")
         })
         return "split_script"
     
@@ -929,14 +931,13 @@ Your final output MUST be raw Markdown, with no JSON or backticks.
 
 
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        reply = client.models.generate_content(
-            model=GEMINI_MODEL,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.4
-            ),
-            contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
+        # client = genai.Client(api_key=GEMINI_API_KEY)
+        reply = get_gemini_response(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            conversation_history=[],
+            api_key=GEMINI_API_KEY,
+            model=GEMINI_MODEL
         )
         reply_text = reply.text.strip()
     except Exception as e:
@@ -1039,7 +1040,7 @@ def generate_script(**kwargs):
     user_prompt = f"IDEA: {prompt}\nSUMMARY: {idea_description}\nGenerate script."
 
     # 5. Generate & Parse
-    response_text = get_gemini_response(user_prompt, final_system_prompt, conversation_history_for_ai)
+    response_text = get_gemini_response(prompt=user_prompt, system_instruction=final_system_prompt, conversation_history=conversation_history_for_ai,api_key=GEMINI_API_KEY,model=GEMINI_MODEL)
     data = extract_json_from_text(response_text)
     
     if not data or "script_content" not in data:
@@ -1142,7 +1143,7 @@ _{data.get('visual_direction')}_
 
 import math
 
-def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=90):
+def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_duration=90,negative_prompt=""):
     """
     Transforms AI output into downstream config.
     NOW: Uses the 'duration' provided by the AI, with safety clamping.
@@ -1213,7 +1214,8 @@ def build_scene_config(segments_data, aspect_ratio="16:9", images=[], max_video_
             "duration": int(round(final_duration)),
             "aspect_ratio": aspect_ratio,
             "environment": environment,
-            "emotion": emotion
+            "emotion": emotion,
+            "negative_prompt": negative_prompt
         }
         final_config.append(config_item)
 
@@ -1329,6 +1331,7 @@ def split_script_task(**context):
     message_id = ti.xcom_pull(key="message_id", task_ids="agent_input")
     prompt_analysis = ti.xcom_pull(key="prompt_analysis", task_ids="validate_prompt_clarity")
     aspect_ratio = prompt_analysis.get("aspect_ratio")
+    negative_prompt = prompt_analysis.get("negative_prompt", "")
     # This one needs fixing - it should handle both script and generated_script
     generate_script = ti.xcom_pull(key="generated_output", task_ids="generate_script", default=None)
 
@@ -1398,12 +1401,23 @@ def split_script_task(**context):
     # logging.info(f"Triggering video generation DAG for thread {thread_id}")
     
     logging.info("Thinking: I'm breaking down the script into individual scenes to ensure the video flows naturally...")
+    conversation_history_for_ai = []
+    for i in range(0, len(chat_history), 2):
+        if i + 1 < len(chat_history):
+            user_msg = chat_history[i]
+            assistant_msg = chat_history[i + 1]
+            if user_msg["role"] == "user" and assistant_msg["role"] == "assistant":
+                conversation_history_for_ai.append({
+                    "prompt": user_msg["content"],
+                    "response": assistant_msg["content"]
+                })
     # Step A: Clean Extraction
     draft_json = get_gemini_response(
         prompt=f"Extract spoken lines from:\n{script_content}",
         system_instruction=SYSTEM_PROMPT_EXTRACTOR,
+        conversation_history=conversation_history_for_ai,
         temperature=0.2,
-        # api_key=GEMINI_API_KEY
+        api_key=GEMINI_API_KEY
     )
     
     try:
@@ -1426,7 +1440,7 @@ def split_script_task(**context):
         prompt=f"Optimize these lines for natural video flow:\n{json.dumps(draft_segments)}",
         system_instruction=SYSTEM_PROMPT_FORMATTER,
         temperature=0.3, 
-        # api_key=GEMINI_API_KEY
+        api_key=GEMINI_API_KEY
     )
     
     try:
@@ -1437,7 +1451,8 @@ def split_script_task(**context):
             segments_data=final_segments, 
             aspect_ratio=aspect_ratio, 
             images=images,
-            max_video_duration=MAX_DURATION
+            max_video_duration=MAX_DURATION,
+            negative_prompt=negative_prompt
         )
         
         ti.xcom_push(key="segments", value=segments_for_processing)
@@ -1506,7 +1521,9 @@ def check_pg13_content(**kwargs):
         response = get_gemini_response(
             prompt=moderation_prompt,
             system_instruction=system_instruction,
-            temperature=0.2
+            temperature=0.2,
+            api_key=GEMINI_API_KEY,
+            model=GEMINI_MODEL
         )
         
         moderation_result = extract_json_from_text(response)
@@ -1698,15 +1715,17 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
             emo = segment.get('emotion', '')
             scene_context_str = f"{env}. Atmosphere is {emo}"
             
+            
             result = veo_tool._run(
-                image_path=segment.get('image_path'),
+                frame1_path=segment.get('image_path'),
                 prompt=segment.get('prompt'),
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
                 output_dir=str(chat_cache_dir),
                 continuity_context=continuity_instruction,
                 voice_persona=voice_persona,
-                scene_context=scene_context_str
+                scene_context=scene_context_str,
+                negative_prompt=segment.get('negative_prompt', "")
             )
             
             if result.get('success'):

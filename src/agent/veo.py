@@ -1,20 +1,12 @@
-import asyncio
-import json
 import os
-from pathlib import Path
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field
 from langchain.tools import BaseTool
-from langgraph.prebuilt import create_react_agent
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_core.callbacks import CallbackManagerForToolRun
+
 import logging
 import base64
-import tempfile
 import time
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 import uuid
@@ -29,19 +21,21 @@ PERFORMANCE INSTRUCTIONS:
 4. Maintain eye contact.
 """
 
-STRICT_NEGATIVE_PROMPT = "text, subtitles, captions, typography, watermark, logo, blurry, distorted, morphing, bad audio, music, background noise"
+STRICT_NEGATIVE_PROMPT = "**Do not include any text, subtitles, watermarks, or logos. Avoid blurry footage, distorted or morphing visuals, and oversaturated neon colors. The video must not have shaky camera movement or a stock-footage aesthetic. Ensure there are no facial artifacts, extra limbs, or lip-sync mismatches. Exclude all music, background noise, and robotic voices; ensure audio is pristine. Do not include Western Christmas imagery like Santa or fake snow, and avoid cultural stereotypes.**"
 
 # ==================== MODELS ====================
 
 class VeoVideoInput(BaseModel):
-    image_path: str = Field(..., description="Local file path to the person's reference image (face photo)")
+    frame1_path: str = Field(..., description="Local file path to the person's reference image (face photo)")
     prompt: str = Field(..., description="Exact text the person should speak in the video")
+    frame2_path: Optional[str] = Field(None, description="Optional second frame for slight motion")
     aspect_ratio: Optional[str] = Field("9:16", description="9:16 (vertical), 16:9 (horizontal), 1:1")
     duration_seconds: Optional[int] = Field(..., ge=2, le=30)
     resolution: Optional[str] = Field("720p", description="480p, 720p, or 1080p")
     output_dir: Optional[str] = Field(None, description="Where to save the video(s). Defaults to temp dir.")
     video_model: Optional[str] = Field("veo-3.0-fast-generate-001",description="video model")
     voice_persona: Optional[str] = Field("Professional voice", description="Consistent voice description")
+    negative_prompt: Optional[str] = Field("", description="Negative prompt to avoid unwanted elements")
    
 class GoogleVeoVideoTool(BaseTool):
     name: str = "google_veo_generate_video_with_scene"
@@ -122,8 +116,9 @@ class GoogleVeoVideoTool(BaseTool):
 
     def _run(
         self,
-        image_path: str,
+        frame1_path: str,
         prompt: str,
+        frame2_path: str = "",
         scene_description: str = "",
         aspect_ratio: str = "9:16",
         duration_seconds: int = 6,
@@ -132,13 +127,14 @@ class GoogleVeoVideoTool(BaseTool):
         resolution: str = "720p",
         continuity_context: str = "",
         voice_persona: str = "Professional voice",
-        scene_context: str = "Professional studio lighting" # New arg passed from Airflow
+        scene_context: str = "Professional studio lighting", # New arg passed from Airflow
+        negative_prompt: str = "",
     ) -> Dict[str, Any]:
 
         # output_dir = "/appz/dev/test_agents/output"
         os.makedirs(output_dir, exist_ok=True)
 
-        image_b64 = self._image_to_base64(image_path)
+        image_b64 = self._image_to_base64(frame1_path)
 
         # 1. Construct the 7-Component Meta Prompt
         # We bypass the LLM "optimizer" and build it deterministically for control
@@ -158,7 +154,7 @@ class GoogleVeoVideoTool(BaseTool):
             duration_seconds=duration_seconds,
             person_generation="ALLOW_ADULT",
             resolution=resolution,
-            negative_prompt=STRICT_NEGATIVE_PROMPT
+            negative_prompt = (negative_prompt + ", " + STRICT_NEGATIVE_PROMPT) if negative_prompt else STRICT_NEGATIVE_PROMPT
         )
 
         try:
