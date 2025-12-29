@@ -655,7 +655,7 @@ def fetch_unread_emails(**kwargs):
                 "timestamp": timestamp,
                 "is_reply": True,
                 "thread_history": thread_history,
-                "chat_history": format_chat_history(thread_history),
+                "history": format_chat_history(thread_history),
                 "thread_length": actual_thread_length,
                 "images": all_workspace_images,
                 "new_images_count": len(new_images),

@@ -464,6 +464,8 @@ def agent_input_task(**kwargs):
     # 2. Unified Extraction Strategy
     # Check Chat Inputs first (Agent), then fallback to Email Data
     prompt = chat_inputs.get("message", "") or email_data.get("content", "")
+    chat_history = chat_inputs.get("history", [])
+    logging.info(f"Chat History Length: {len(chat_history)}")
     prompt = prompt.strip()
     
     # Images might be in 'files' (Agent) or 'images' (Email/Direct)
@@ -491,7 +493,6 @@ def agent_input_task(**kwargs):
     
     ti.xcom_push(key="detected_aspect_ratio", value=detected_aspect_ratio)
 
-    chat_history = conf.get("chat_history", [])
     thread_id = conf.get("thread_id", "")
     message_id = conf.get("message_id", "")
     
@@ -1534,7 +1535,7 @@ def check_pg13_content(**kwargs):
         if is_mature_content:
             logging.warning(f"Mature content detected (PG-13 or above). Concerns: {concerns}")
             logging.info(f"Explanation: {explanation}")
-            return "send_content_warning_email"
+            return "send_content_warning"
         
         logging.info("Thinking: Content check passed! The video is appropriate for general audiences (G/PG).")
         return "prepare_segments"
@@ -1544,7 +1545,7 @@ def check_pg13_content(**kwargs):
         ti.xcom_push(key="is_mature_content", value=False)
         return "prepare_segments"
     
-def send_content_warning_email(**kwargs):
+def send_content_warning(**kwargs):
     """Send email warning about content that's not PG-13."""
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
@@ -1622,6 +1623,7 @@ def send_content_warning_email(**kwargs):
         )
         
         logging.info(f"Content warning email sent to {sender_email}")
+        raise AirflowException(f"Content moderation failed. Concerns: {concerns_html}")
         
 def process_single_segment(segment, segment_index, voice_persona, total_segments=1, **context):
     """
@@ -1750,7 +1752,7 @@ def prepare_segments_for_expand(**context):
     Example:
     "A 30-year-old Japanese male with short spiked black hair, dark brown almond eyes, wearing a navy blue tailored suit jacket over a white crisp shirt, slim build, clean-shaven, serious professional expression."
     """
-    
+    voice_persona = "Default professional voice"
     if images and len(images) > 0:
         # We always use the FIRST image as the anchor for the voice identity
         ref_image_path = images[0].get("path") if isinstance(images[0], dict) else images[0]
@@ -2253,9 +2255,9 @@ with DAG(
         doc_md="Checking content rating"
     )
 
-    send_content_warning_task = PythonOperator(
-        task_id='send_content_warning_email',
-        python_callable=send_content_warning_email,
+    send_content_warning = PythonOperator(
+        task_id='send_content_warning',
+        python_callable=send_content_warning,
         dag=dag,
         doc_md="Sending content warning"
     )
@@ -2319,10 +2321,10 @@ with DAG(
     generate_script_task >> split_script
     generate_script_task >> end_task
 
-    split_script >> check_pg13_task >> [prepare_segments, send_content_warning_task]
+    split_script >> check_pg13_task >> [prepare_segments, send_content_warning]
     # Video processing pipeline (starts from prepare_segments)
     prepare_segments >> process_segments >> collect_task >> merge_task >> send_video_task
-    send_content_warning_task
+    send_content_warning
     # Error/completion paths
     send_missing_elements_task >> end_task
     send_error_email_task >> end_task
