@@ -9,7 +9,7 @@ def get_gemini_response(
     system_instruction: str | None = None,
     conversation_history: list[dict[str, str]] | None = None,
     temperature: float = 0.7,
-    model_name: str = "gemini-2.5-pro",
+    model: str = "gemini-2.5-pro",
 ) -> str:
     """
     Call Google Gemini model with optional system instruction and chat history.
@@ -65,10 +65,10 @@ def get_gemini_response(
                 parts=[types.Part(text=prompt)]
             )
         )
-
+        logging.info(f"Gemini request contents: {contents}")
         # Generate response with proper system instruction support
         response = client.models.generate_content(
-            model=model_name,
+            model=model,
             contents=contents,
             config=generation_config,
         )
