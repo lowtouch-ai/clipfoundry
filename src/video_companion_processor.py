@@ -1295,6 +1295,7 @@ def split_script_task(**context):
     - Extract ONLY the spoken words (Narration/Dialog).
     - IGNORE "Reasoning for changes", sound effects, and labels.
     - Return JSON: { "draft_segments": ["line 1", "line 2"] }
+    - If the script is not provided look for it in the conversation history.
     """
 
     SYSTEM_PROMPT_FORMATTER = """
