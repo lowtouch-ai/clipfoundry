@@ -21,7 +21,7 @@ PERFORMANCE INSTRUCTIONS:
 4. Maintain eye contact.
 """
 
-STRICT_NEGATIVE_PROMPT = "**Do not include any text, subtitles, watermarks, or logos. Avoid blurry footage, distorted or morphing visuals, and oversaturated neon colors. The video must not have shaky camera movement or a stock-footage aesthetic. Ensure there are no facial artifacts, extra limbs, or lip-sync mismatches. Exclude all music, background noise, and robotic voices; ensure audio is pristine. Do not include Western Christmas imagery like Santa or fake snow, and avoid cultural stereotypes.**"
+STRICT_NEGATIVE_PROMPT = "**Do not include any text, subtitles, watermarks, or logos. Avoid blurry footage, distorted or morphing visuals, and oversaturated neon colors. The video must not have shaky camera movement or a stock-footage aesthetic. Ensure there are no facial artifacts, extra limbs, or lip-sync mismatches. Exclude all music, background noise, and robotic voices; ensure audio is pristine. Do not include Western Christmas imagery like Santa or fake snow, and avoid cultural stereotypes. When the script ends, hold a neutral, professional expression. DO NOT nod, smile excessively, or gasp for air after the last word.**"
 
 # ==================== MODELS ====================
 
