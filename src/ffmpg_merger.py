@@ -17,6 +17,8 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models.param import Param
 from airflow.utils.dates import days_ago
+import shutil
+from datetime import datetime
 
 # ================= configuration =================
 logger = logging.getLogger("airflow.task")
@@ -280,9 +282,22 @@ def merge_videos_logic(**context):
     
     # Cleanup Temp
     try:
-        shutil.rmtree(temp_dir)
-    except:
-        pass
+        if temp_dir.exists():
+            archive_base = base_dir / "archive"
+            archive_base.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_dir = archive_base / f"run_{timestamp}_{req_id}"
+            
+            shutil.move(str(temp_dir), str(archive_dir))
+            logger.info(f"Temp files archived to: {archive_dir}")
+    except Exception as e:
+        logger.warning(f"Failed to archive temp directory: {e}")
+        # Optional: still try to delete if archive fails
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
 
     return str(final_output_path)
 
