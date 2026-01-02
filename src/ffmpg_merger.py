@@ -27,8 +27,8 @@ logger = logging.getLogger("airflow.task")
 TRANSITION_DURATION = 0.1
 
 # Silence detection thresholds
-SILENCE_THRESHOLD = Variable.get("CF.merger.silence.threshold", default_var="-30dB")  # Audio level threshold for silence detection
-SILENCE_MIN_DURATION = Variable.get("CF.merger.silence.min_duration", default_var="0.3")   # Minimum duration (seconds) to consider as silence
+SILENCE_THRESHOLD = "-30dB"  # Audio level threshold for silence detection
+SILENCE_MIN_DURATION = 0.4   # Minimum duration (seconds) to consider as silence
 
 WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"
 WATERMARK_PATH_9_16 = "/appz/shared/branding/watermark_9_16.mp4"
