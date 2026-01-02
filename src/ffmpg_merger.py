@@ -28,7 +28,7 @@ TRANSITION_DURATION = 0.1
 
 # Silence detection thresholds
 SILENCE_THRESHOLD = "-30dB"  # Audio level threshold for silence detection
-SILENCE_MIN_DURATION = 0.4   # Minimum duration (seconds) to consider as silence
+SILENCE_MIN_DURATION = 0.6   # Minimum duration (seconds) to consider as silence
 
 WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"
 WATERMARK_PATH_9_16 = "/appz/shared/branding/watermark_9_16.mp4"
@@ -82,6 +82,7 @@ def detect_silence_boundaries(file_path: str) -> Tuple[float, float]:
     Uses silencedetect filter to find silent regions, then calculates
     how much to trim from start and end.
     """
+    logger.info(f"Starting Detecting silence in {Path(file_path).name} with threshold {SILENCE_THRESHOLD} and min duration {SILENCE_MIN_DURATION}")
     cmd = [
         "ffmpeg", "-i", file_path,
         "-af", f"silencedetect=n={SILENCE_THRESHOLD}:d={SILENCE_MIN_DURATION}",
