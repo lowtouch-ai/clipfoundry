@@ -19,7 +19,7 @@ from airflow.models.param import Param
 from airflow.utils.dates import days_ago
 import shutil
 from datetime import datetime
-
+from airflow.models import Variable
 # ================= configuration =================
 logger = logging.getLogger("airflow.task")
 
@@ -28,7 +28,7 @@ TRANSITION_DURATION = 0.1
 
 # Silence detection thresholds
 SILENCE_THRESHOLD = "-30dB"  # Audio level threshold for silence detection
-SILENCE_MIN_DURATION = 0.3   # Minimum duration (seconds) to consider as silence
+SILENCE_MIN_DURATION = 0.4   # Minimum duration (seconds) to consider as silence
 
 WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"
 WATERMARK_PATH_9_16 = "/appz/shared/branding/watermark_9_16.mp4"
