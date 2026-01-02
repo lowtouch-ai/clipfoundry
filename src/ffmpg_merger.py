@@ -82,7 +82,6 @@ def detect_silence_boundaries(file_path: str) -> Tuple[float, float]:
     Uses silencedetect filter to find silent regions, then calculates
     how much to trim from start and end.
     """
-    logger.info(f"Starting Detecting silence in {Path(file_path).name} with threshold {SILENCE_THRESHOLD} and min duration {SILENCE_MIN_DURATION}")
     cmd = [
         "ffmpeg", "-i", file_path,
         "-af", f"silencedetect=n={SILENCE_THRESHOLD}:d={SILENCE_MIN_DURATION}",
