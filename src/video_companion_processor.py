@@ -1291,6 +1291,12 @@ def split_script_task(**context):
     SYSTEM_PROMPT_EXTRACTOR = """
     You are a Script Extraction Specialist.
     Your input includes conversation, sound effects, script lines, and reasoning.
+
+    CRITICAL RULES:
+    1. **Minimum Segment Length:** The video generation model requires at least 4 seconds of audio.
+    2. **Action:** You must MERGE short sentences (under 8 words) with adjacent lines to create segments of 8-20 words.
+    3. **Forbidden:** Do not output segments with fewer than 5 words (e.g., "The impact?" is illegal; merge it with the next or previous line).
+
     TASK:
     - Extract ONLY the spoken words (Narration/Dialog).
     - IGNORE "Reasoning for changes", sound effects, and labels.
