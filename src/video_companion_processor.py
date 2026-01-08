@@ -656,8 +656,19 @@ def validate_prompt_clarity(**kwargs):
        - If the user says nothing about ratio, return "{detected_aspect_ratio}".
     6. Check if the user specified a duration (e.g., "make it 20 seconds").
     7. "wpm_override": Detect if the user specified a speaking pace (e.g., "fast", "slow", "180 wpm"). Convert vague terms: "Fast"->190, "Slow"->130, "Normal"->150. If explicit number given, use it. Return null if not mentioned.
+    ### NEGATIVE PROMPT EXTRACTION (STRICT)
+    **Objective:** Identify EVERYTHING the user wants to avoid or exclude.
+    
+    1. **Scan for Exclusionary Language:** Detect all phrases indicating negation, avoidance, or prohibition (e.g., "no", "don't", "without", "avoid", "stop", "never").
+    2. **Transformation Rule (Negation -> Concept):** - You must convert the "command to avoid" into the "concept to be avoided" (Noun or Gerund format).
+       - *Logic:* If user says "Do not [Verb]", extract "[Verb]ing".
+       - *Logic:* If user says "No [Noun]", extract "[Noun]".
+    3. **Implicit Static Constraints:** - If the user describes a fixed/static state, extract the opposing dynamic action as a negative constraint. (e.g., if user says "remain still", extract "movement, motion").
+    4. **Safety & Ethics:** - Identify any objects or scenarios in the input that pose a safety risk if animated incorrectly. Extract the specific risky action associated with them as a negative constraint.
+    5. **Formatting:** - The `negative_prompt` field must be a single string of comma-separated concepts. 
+       - Do NOT include the words "no" or "without" in the output string. Only list the elements themselves.
+    
     Return JSON:
-    ``json
     {{
       "request_type": "video_request" | "general_query",
       "has_clear_idea": true|false,
@@ -672,7 +683,6 @@ def validate_prompt_clarity(**kwargs):
       "wpm_override": 180,  // Integer or null
       "target_duration": 30
     }}
-    ```
     """
     logging.info("Thinking: I'm analyzing your request to determine the video style, tone, and script requirements...")
 
@@ -740,7 +750,8 @@ def validate_prompt_clarity(**kwargs):
         "aspect_ratio": analysis.get("aspect_ratio", "16:9"),
         "resolution": analysis.get("resolution", "720p"),
         "wpm_override": wpm_override,
-        "target_duration": analysis.get("target_duration")
+        "target_duration": analysis.get("target_duration"),
+        "negative_prompt": analysis.get("negative_prompt", "")
     })
 
     headers = email_data.get("headers", {})

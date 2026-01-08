@@ -72,7 +72,7 @@ class GoogleVeoVideoTool(BaseTool):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
-    def _construct_meta_prompt(self, raw_script: str, character_desc: str, context: str, continuity: str) -> str:
+    def _construct_meta_prompt(self, raw_script: str, character_desc: str, context: str, continuity: str, negative_prompt: str) -> str:
         """
         Constructs the strict 7-Component Meta Prompt for Veo 3.
         """
@@ -98,6 +98,8 @@ class GoogleVeoVideoTool(BaseTool):
         # Explicitly separate speech from environment
         sounds_block = "Sounds: Clear speech only. No background music. Room tone matches environment."
 
+        constraints_block = f"Constraints:  Strictly AVOID the following elements: {negative_prompt}." if negative_prompt else ""
+
         # Assemble the Block
         final_prompt = f"""
 {subject_block}
@@ -111,6 +113,8 @@ class GoogleVeoVideoTool(BaseTool):
 {dialogue_block}
 
 {sounds_block}
+
+{constraints_block}
         """
         return final_prompt.strip()
 
@@ -142,7 +146,8 @@ class GoogleVeoVideoTool(BaseTool):
             raw_script=prompt,
             character_desc=voice_persona,
             context=scene_context,
-            continuity=continuity_context
+            continuity=continuity_context,
+            negative_prompt=negative_prompt
         )
         
         logging.info(f"🚀 Veo 3 Meta Prompt:\n{meta_prompt}")

@@ -32,6 +32,7 @@ SILENCE_MIN_DURATION = 0.3   # Minimum duration (seconds) to consider as silence
 
 WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"
 WATERMARK_PATH_9_16 = "/appz/shared/branding/watermark_9_16.mp4"
+Keep_INTERMEDIATES = False  # Whether to keep intermediate files for debugging
 
 default_args = {
     'owner': 'lowtouch-ai',
@@ -407,11 +408,16 @@ def merge_videos_logic(**context):
     finalize_video(current_merged_path, str(final_output_path))    
     logger.info(f"✅ Successfully created: {final_output_path}")
     
+    keep = Keep_INTERMEDIATES
     # Cleanup
-    try:
-        shutil.rmtree(temp_dir)
-    except:
-        pass
+    if not keep:
+        try:
+            shutil.rmtree(temp_dir)
+            logger.info("Cleaned up all temporary files")
+        except:
+            pass
+    else:
+        logger.info("Kept intermediate files as requested (in temp folder)")
 
     return str(final_output_path)
 

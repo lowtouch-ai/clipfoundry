@@ -30,6 +30,8 @@ VIDEO_COMPANION_FROM_ADDRESS = Variable.get("CF.companion.from.address")
 GMAIL_CREDENTIALS = Variable.get("CF.companion.gmail.credentials")
 LAST_PROCESSED_EMAIL_FILE = "/appz/cache/video_companion_last_processed_email.json"
 SHARED_IMAGES_DIR = "/appz/shared_images"
+SILENCE_THRESHOLD = Variable.get("CF.merger.silence.threshold", default_var="-30dB")  # Audio level threshold for silence detection
+SILENCE_MIN_DURATION = Variable.get("CF.merger.silence.min_duration", default_var="0.3")   # Minimum duration (seconds) to consider as silence
 
 def authenticate_gmail():
     """Authenticate Gmail API and verify correct email account."""
