@@ -952,6 +952,7 @@ Your final output MUST be raw Markdown, with no JSON or backticks.
         )
         reply_text = reply.text.strip()
     except Exception as e:
+        logging.error(f"Gemini API error during general response: {e}", exc_info=True)
         reply_text = "Sorry, I could not process your request."
 
     # Remove accidental quotes
