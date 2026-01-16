@@ -950,7 +950,12 @@ Your final output MUST be raw Markdown, with no JSON or backticks.
             api_key=GEMINI_API_KEY,
             model=GEMINI_MODEL
         )
-        reply_text = reply.text.strip()
+        logging.info(f"Generated general response via Gemini.:{reply}")
+        # ✅ Normalize reply to string
+        if isinstance(reply, str):
+            reply_text = reply.strip()
+        else:
+            reply_text = reply.text.strip()
     except Exception as e:
         logging.error(f"Gemini API error during general response: {e}", exc_info=True)
         reply_text = "Sorry, I could not process your request."
