@@ -2,6 +2,7 @@ from google import genai
 from google.genai import types
 import json
 import logging
+from typing import Literal
 
 def get_gemini_response(
     prompt: str,
@@ -10,6 +11,7 @@ def get_gemini_response(
     conversation_history: list[dict[str, str]] | None = None,
     temperature: float = 0.7,
     model: str = "gemini-2.5-pro",
+    response_format: Literal["json", "markdown", "text"] = "json",
 ) -> str:
     """
     Call Google Gemini model with optional system instruction and chat history.
@@ -29,9 +31,14 @@ def get_gemini_response(
         # Create client instance with API key
         client = genai.Client(api_key=api_key)
 
+        if response_format == "json":
+            mime_type = "application/json"
+        else:
+            mime_type = "text/plain"
+
         # Build generation config with system instruction
         config_dict = {
-            "response_mime_type": "application/json",
+            "response_mime_type": mime_type,
             "temperature": temperature,
         }
         
