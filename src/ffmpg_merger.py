@@ -16,7 +16,6 @@ import logging
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models.param import Param
-from airflow.utils.dates import days_ago
 import shutil
 from datetime import datetime
 
@@ -32,7 +31,7 @@ SILENCE_MIN_DURATION = 0.3   # Minimum duration (seconds) to consider as silence
 
 WATERMARK_PATH_16_9 = "/appz/shared/branding/watermark_16_9.mp4"
 WATERMARK_PATH_9_16 = "/appz/shared/branding/watermark_9_16.mp4"
-Keep_INTERMEDIATES = False  # Whether to keep intermediate files for debugging
+Keep_INTERMEDIATES = True  # Whether to keep intermediate files for debugging
 
 default_args = {
     'owner': 'lowtouch-ai',
@@ -267,7 +266,7 @@ def merge_pair_concat_audio(video_a: str, video_b: str, output_path: str, durati
         # Audio concatenation instead of crossfade
         f"[0:a]asetpts=PTS-STARTPTS[a0];"
         f"[1:a]asetpts=PTS-STARTPTS[a1];"
-        f"[a0][a1]concat=n=2:v=0:a=1[a]"
+        f"[a0][a1]acrossfade=d={TRANSITION_DURATION}:c1=tri:c2=tri[a]"
     )
     
     cmd = [
@@ -429,7 +428,7 @@ with DAG(
     default_args=default_args,
     description='Enhanced video merger with silence removal and smart audio handling',
     schedule_interval=None,
-    start_date=days_ago(1),
+    start_date=datetime(2025, 12, 12),
     tags=['lowtouch', 'video', 'ffmpeg', 'enhanced'],
     params={
         "video_paths": Param(
