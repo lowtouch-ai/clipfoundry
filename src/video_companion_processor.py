@@ -1,4 +1,6 @@
 import base64
+import boto3
+from botocore.client import Config as BotoConfig
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -446,6 +448,42 @@ def mark_message_as_read(service, message_id):
     except Exception as e:
         logging.error(f"Failed to mark as read: {e}")
         return False
+
+def download_from_minio(minio_config: dict, s3_paths: list, local_dir: str) -> list:
+    """Download images from MinIO to a local cache directory. Returns local file paths."""
+    # Resolve credentials: env var first, then Airflow Variable as fallback
+    access_key = (
+        os.environ.get("MINIO_ACCESS_KEY")
+        or Variable.get("MINIO_ACCESS_KEY", default_var="minioadmin")
+    )
+    secret_key = (
+        os.environ.get("MINIO_SECRET_KEY")
+        or Variable.get("MINIO_SECRET_KEY", default_var="")
+    )
+    endpoint = minio_config.get("endpoint", "http://minio:9000")
+
+    logging.info(f"download_from_minio: endpoint={endpoint}, paths={s3_paths}, local_dir={local_dir}")
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=BotoConfig(signature_version="s3v4"),
+    )
+    local_paths = []
+    Path(local_dir).mkdir(parents=True, exist_ok=True)
+    for s3_path in s3_paths:
+        # s3://bucket/key  →  bucket, key
+        without_scheme = s3_path.replace("s3://", "")
+        bucket, key = without_scheme.split("/", 1)
+        local_file = str(Path(local_dir) / Path(key).name)
+        logging.info(f"download_from_minio: fetching bucket={bucket} key={key} → {local_file}")
+        s3.download_file(bucket, key, local_file)
+        local_paths.append(local_file)
+        logging.info(f"download_from_minio: OK {s3_path} → {local_file}")
+    return local_paths
+
 def agent_input_task(**kwargs):
     """
     Extract and standardize input from both Email and Agent sources.
@@ -465,10 +503,27 @@ def agent_input_task(**kwargs):
     chat_history = chat_inputs.get("history", [])
     logging.info(f"Chat History Length: {len(chat_history)}")
     prompt = prompt.strip()
-    
+
+    # Resolve chat_id once — used for per-run directory isolation
+    chat_id = chat_inputs.get("chat_id", "") or conf.get("__request_id", "manual_run")
+
     # Images might be in 'files' (Agent) or 'images' (Email/Direct)
-    images = chat_inputs.get("files", []) or conf.get("images", [])
-    
+    # If image_paths (MinIO URIs) were injected by agentomatic, download them first
+    image_paths_from_minio = conf.get("image_paths", [])
+    minio_config = conf.get("minio_config", {})
+    if image_paths_from_minio and minio_config:
+        local_dir = str(Path(CACHE_ROOT) / chat_id / "minio_images")
+        try:
+            downloaded = download_from_minio(minio_config, image_paths_from_minio, local_dir)
+            images = [{"path": p} for p in downloaded]
+            logging.info(f"agent_input_task: downloaded {len(images)} image(s) from MinIO to {local_dir}")
+        except Exception as _dl_err:
+            logging.error(f"agent_input_task: MinIO download FAILED — {type(_dl_err).__name__}: {_dl_err}", exc_info=True)
+            raise
+    else:
+        images = chat_inputs.get("files", []) or conf.get("images", [])
+        logging.info(f"agent_input_task: no MinIO paths in conf, using files from chat_inputs ({len(images)} image(s))")
+
     logging.info(f"Thinking: I've received your request. I'm now analyzing the {len(images)} image(s) and your prompt to understand exactly what you need...")
 
     detected_aspect_ratio = "16:9" # Default fallback
@@ -496,6 +551,7 @@ def agent_input_task(**kwargs):
     
     # 3. Push Standardized Data to XCom
     ti.xcom_push(key="agent_headers", value=agent_headers)
+    ti.xcom_push(key="chat_id", value=chat_id)
     
     # Update email_data to ensure downstream tasks find the content
     # regardless of where it came from
