@@ -89,13 +89,11 @@ with DAG(
     step_1 = PythonOperator(
         task_id="fetch_and_inspect_image",
         python_callable=fetch_and_inspect_image,
-        provide_context=True,
     )
 
     step_2 = PythonOperator(
         task_id="generate_final_report",
         python_callable=generate_final_report,
-        provide_context=True,
     )
 
     # Define Dependency: Step 1 must finish before Step 2 starts

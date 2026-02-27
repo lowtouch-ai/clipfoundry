@@ -323,19 +323,16 @@ with DAG(
     step_1 = PythonOperator(
         task_id="generate_full_script",
         python_callable=generate_full_script,
-        provide_context=True,
     )
 
     step_2 = PythonOperator(
         task_id="validate_script_duration",
         python_callable=validate_script_duration,
-        provide_context=True,
     )
     
     step_3 = PythonOperator(
         task_id="request_user_approval",
         python_callable=request_user_approval,
-        provide_context=True,
     )
 
     step_1 >> step_2 >> step_3

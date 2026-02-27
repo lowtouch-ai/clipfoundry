@@ -427,7 +427,7 @@ with DAG(
     dag_id='video_merge_pipeline_enhanced',
     default_args=default_args,
     description='Enhanced video merger with silence removal and smart audio handling',
-    schedule_interval=None,
+    schedule=None,
     start_date=datetime(2025, 12, 12),
     tags=['lowtouch', 'video', 'ffmpeg', 'enhanced'],
     params={
@@ -452,7 +452,6 @@ with DAG(
     merge_task = PythonOperator(
         task_id='merge_video_files',
         python_callable=merge_videos_logic,
-        provide_context=True
     )
 
     merge_task

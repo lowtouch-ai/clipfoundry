@@ -769,7 +769,7 @@ Runs every 1 minute
 with DAG(
     "video_companion_monitor_mailbox",
     default_args=default_args,
-    schedule_interval=timedelta(minutes=1),
+    schedule=timedelta(minutes=1),
     catchup=False,
     doc_md=readme_content,
     tags=["video", "companion", "monitor", "email"]
@@ -778,25 +778,21 @@ with DAG(
     fetch_emails_task = PythonOperator(
         task_id="fetch_unread_emails",
         python_callable=fetch_unread_emails,
-        provide_context=True
     )
 
     branch_task = BranchPythonOperator(
         task_id="branch_task",
         python_callable=branch_function,
-        provide_context=True
     )
 
     trigger_processor_task = PythonOperator(
         task_id="trigger_video_processor",
         python_callable=trigger_video_processor,
-        provide_context=True
     )
 
     no_email_found_task = PythonOperator(
         task_id="no_email_found_task",
         python_callable=no_email_found,
-        provide_context=True
     )
 
     fetch_emails_task >> branch_task >> [trigger_processor_task, no_email_found_task]

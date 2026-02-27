@@ -7,7 +7,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.dummy import DummyOperator
+from airflow.operators.empty import EmptyOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 import os
@@ -2283,7 +2283,7 @@ with DAG(
     "video_companion_processor",
     description=" creator:0.3",
     default_args=default_args,
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     max_active_runs=3,
     doc_md=readme_content,
@@ -2293,33 +2293,28 @@ with DAG(
     agent_input_task = BranchPythonOperator(
         task_id="agent_input",
         python_callable=agent_input_task,
-        provide_context=True,
         doc_md="Analyzing your request"
     )
     freemium_guard_task = BranchPythonOperator(
         task_id="freemium_guard",
         python_callable=freemium_guard_task,
-        provide_context=True,
         doc_md="Checking usage limits"
     )
     validate_input_task = BranchPythonOperator(
         task_id="validate_input",
         python_callable=validate_input,
-        provide_context=True,
         doc_md="Validating inputs"
     )
 
     validate_prompt_clarity_task = BranchPythonOperator(
         task_id="validate_prompt_clarity",
         python_callable=validate_prompt_clarity,
-        provide_context=True,
         doc_md="Understanding your intent"
     )
 
     send_missing_elements_task = PythonOperator(
         task_id="send_missing_elements_email",
         python_callable=send_missing_elements_email,
-        provide_context=True,
         doc_md="Requesting missing info"
     )
 
@@ -2332,7 +2327,6 @@ with DAG(
     generate_script_task = BranchPythonOperator(  # ✅ Correct for branching
         task_id="generate_script",
         python_callable=generate_script,
-        provide_context=True,
         doc_md="Drafting video script"
     )
 
@@ -2341,18 +2335,16 @@ with DAG(
     send_error_email_task = PythonOperator(
         task_id="send_error_email",
         python_callable=send_error_email,
-        provide_context=True,
         doc_md="Handling error"
     )
 
     send_general_response_task = PythonOperator(
         task_id="send_general_response",
         python_callable=send_general_response,
-        provide_context=True,
         doc_md="Replying to query"
     )
 
-    end_task = DummyOperator(
+    end_task = EmptyOperator(
         task_id="end",
         trigger_rule="none_failed_min_one_success",
         doc_md="Finished"
