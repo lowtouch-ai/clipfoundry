@@ -34,6 +34,7 @@ ClipFoundry is an autonomous video production agent built on Apache Airflow. It 
 - **`src/agent/veo.py`** — `GoogleVeoVideoTool` (LangChain `BaseTool`): wraps Google Veo 3.0 API. Constructs a 7-component meta-prompt per scene. Model: `veo-3.0-fast-generate-001`. Supports `negative_prompt` field.
 - **`src/models/gemini.py`** — `get_gemini_response()`: thin wrapper over `google-genai` SDK. Supports `response_format` (`"json"`, `"markdown"`, `"text"`), conversation history, system instructions.
 - **`src/email_utils/email.py`** — Gmail send/auth utilities, used by processor DAG for replies.
+- **`src/utils/think_logging.py`** — Thought-logging utility. `get_logger(name)` returns a logger that publishes JSON messages to Redis `think:{request_id}` Pub/Sub channels, enabling real-time per-task progress streaming to OpenWebUI. `set_request_id(context)` extracts `__request_id` from `dag_run.conf` or `params` and stores it in a `ContextVar`. Uses `RedisThinkHandler`; connects via `REDIS_HOST`/`REDIS_PORT`/`REDIS_DB` env vars (defaults: `redis:6379/0`). The module-level `lot = get_logger("clipfoundry")` instance in the processor replaces `logging.info("Thinking: ...")` calls.
 
 ### Storage Layout (Production)
 
@@ -88,7 +89,7 @@ Set the Airflow Variable `CF.video.model` to `"mock"` during development. The pr
 
 ### Python Path
 
-`video_companion_processor.py` manually adds its own directory and the dags root to `sys.path` to import `agent.veo`, `models.gemini`, and `agent_workflows.utils.think_logging` (the last is an external shared library from the broader Airflow environment).
+`video_companion_processor.py` manually adds its own directory and the dags root to `sys.path` to import `agent.veo`, `models.gemini`, and `utils.think_logging`.
 
 ## Key Design Patterns
 
@@ -97,3 +98,5 @@ Set the Airflow Variable `CF.video.model` to `"mock"` during development. The pr
 - **Dynamic task expansion**: `process_segment` uses `PythonOperator.partial(...).expand()` for parallel per-scene video generation with `pool="video_processing_pool"`.
 - **Dual trigger paths**: `is_agent_trigger()` checks for `agent_headers` key in `conf` to distinguish between email-triggered and chat-triggered runs, routing to different response paths.
 - **Gemini response format**: Always pass `response_format="json"` when expecting structured data. The LLM prompts include explicit JSON schema requirements; use `extract_json_from_text()` as a fallback parser.
+- **Thought streaming**: Each task callable starts with `set_request_id(kwargs)` to bind the Redis channel. "Thinking: ..." progress messages use `lot.info(...)` (the module-level `lot = get_logger("clipfoundry")` instance) rather than `logging.info`. Regular operational logs still use `logging.info`.
+- **`__request_id` / `__user_query` in conf**: Agent-triggered runs may include `__request_id` (used by thought streaming) and `__user_query` (fallback prompt source) in `dag_run.conf`.
