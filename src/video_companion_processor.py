@@ -1965,8 +1965,10 @@ def collect_and_merge_videos(**context):
         logging.error("❌ Need at least 1 videos to proceed with merge.")
         raise ValueError("Insufficient videos for merge")
     
-    # Generate request ID for merge
-    req_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Generate request ID for merge — sanitize run_id (Airflow manual run_ids contain
+    # colons and plus signs from ISO timestamps which are illegal in filenames on WSL/Windows)
+    raw_run_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    req_id = re.sub(r'[:\+\s]', '-', raw_run_id).rstrip('-')
     
     # Push to XCom for merge task
     merge_params = {
