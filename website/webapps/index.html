@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClipFoundry.ai — Autonomous Video Production Agent</title>
+  <meta name="description" content="From script to screen, completely automated. ClipFoundry is the autonomous video production agent for creative studios." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- NAV -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <a href="#" class="logo">clip<span>foundry</span><em>.ai</em></a>
+      <button class="nav-toggle" aria-label="Toggle menu">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#workflows">Workflows</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#tech">Tech Stack</a></li>
+        <li>
+          <a href="https://github.com/lowtouch-ai/clipfoundry" target="_blank" class="nav-link-icon" aria-label="GitHub">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+          </a>
+        </li>
+      </ul>
+      <a href="#get-started" class="btn-primary nav-cta">Get Started</a>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-bg">
+      <div class="orb orb-1"></div>
+      <div class="orb orb-2"></div>
+      <div class="wave-lines"></div>
+    </div>
+    <div class="container hero-content">
+      <div class="hero-badge">Open Source · GNU GPLv3</div>
+      <h1>From Script to Screen.<br /><span class="accent-magenta">Completely Automated.</span></h1>
+      <p class="hero-sub">
+        ClipFoundry is the autonomous video production agent for creative studios.
+        Send an idea, approve a script, receive a finished reel — no editing software required.
+      </p>
+      <div class="hero-actions">
+        <a href="https://demo2025g.clipfoundry.ai" target="_blank" class="btn-primary">Try the Studio</a>
+        <a href="https://github.com/lowtouch-ai/clipfoundry" target="_blank" class="btn-outline">View on GitHub</a>
+      </div>
+      <div class="hero-stats">
+        <div class="stat"><span class="stat-num accent-green">2</span><span class="stat-label">Workflows</span></div>
+        <div class="stat-divider"></div>
+        <div class="stat"><span class="stat-num accent-magenta">100%</span><span class="stat-label">Automated</span></div>
+        <div class="stat-divider"></div>
+        <div class="stat"><span class="stat-num accent-green">0</span><span class="stat-label">Editing Required</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how-it-works" class="section">
+    <div class="container">
+      <div class="section-label accent-green">How It Works</div>
+      <h2>Your Video Producer, <span class="accent-magenta">On Autopilot</span></h2>
+      <p class="section-sub">Five steps from raw idea to finished MP4, fully orchestrated by AI agents.</p>
+      <div class="steps">
+        <div class="step reveal">
+          <div class="step-num">01</div>
+          <div class="step-body">
+            <h3>Send Your Idea</h3>
+            <p>Drop a prompt via email or chat — a topic, a brand name, a script concept. No templates, no forms.</p>
+          </div>
+        </div>
+        <div class="step-arrow">→</div>
+        <div class="step reveal">
+          <div class="step-num">02</div>
+          <div class="step-body">
+            <h3>AI Researches &amp; Scripts</h3>
+            <p>Gemini researches the topic, assigns a persona, and writes a punchy, paced script optimised for video models.</p>
+          </div>
+        </div>
+        <div class="step-arrow">→</div>
+        <div class="step reveal">
+          <div class="step-num">03</div>
+          <div class="step-body">
+            <h3>Review &amp; Approve</h3>
+            <p>Read the proposed script. Reply with feedback to iterate, or say "Looks good" to trigger production.</p>
+          </div>
+        </div>
+        <div class="step-arrow">→</div>
+        <div class="step reveal">
+          <div class="step-num">04</div>
+          <div class="step-body">
+            <h3>AI Generates Clips</h3>
+            <p>Airflow splits the script into scenes, generates video segments using AI models, and stitches them together.</p>
+          </div>
+        </div>
+        <div class="step-arrow">→</div>
+        <div class="step reveal">
+          <div class="step-num">05</div>
+          <div class="step-body">
+            <h3>Receive Your Video</h3>
+            <p>Get a secure download link for your finished MP4 — delivered via email or directly in the chat interface.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WORKFLOWS -->
+  <section id="workflows" class="section section-alt">
+    <div class="container">
+      <div class="section-label accent-green">Two Workflows</div>
+      <h2>Choose How You <span class="accent-magenta">Create</span></h2>
+      <p class="section-sub">Whether you want a hands-off producer relationship or instant results from a studio interface — ClipFoundry has you covered.</p>
+      <div class="workflow-grid">
+
+        <div class="workflow-card reveal">
+          <div class="workflow-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <div class="workflow-badge">Email</div>
+          <h3>The Conversational Producer</h3>
+          <p class="workflow-sub">Best for: Refining ideas, script iteration, and hands-off research.</p>
+          <ul class="workflow-steps">
+            <li><span class="bullet accent-magenta">→</span> Send a minimal prompt email with your idea</li>
+            <li><span class="bullet accent-magenta">→</span> Agent detects format, researches, writes script</li>
+            <li><span class="bullet accent-magenta">→</span> Receive script proposal and iterate via reply</li>
+            <li><span class="bullet accent-magenta">→</span> Approve with "Looks good" to start production</li>
+            <li><span class="bullet accent-magenta">→</span> Receive finished MP4 download link by email</li>
+          </ul>
+          <div class="workflow-example">
+            <span class="example-label">Example prompt</span>
+            <p class="example-text">"Create me a reel on NVIDIA CEO's recent comment on the five layers of AI."</p>
+          </div>
+        </div>
+
+        <div class="workflow-card reveal">
+          <div class="workflow-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+          </div>
+          <div class="workflow-badge">Chat</div>
+          <h3>The Fire-and-Go Studio</h3>
+          <p class="workflow-sub">Best for: Quick generation, using specific images, and instant previews.</p>
+          <ul class="workflow-steps">
+            <li><span class="bullet accent-green">→</span> Open the OpenWebUI chat interface</li>
+            <li><span class="bullet accent-green">→</span> Upload images (optional) and enter your prompt</li>
+            <li><span class="bullet accent-green">→</span> Agent splits script, generates clips per scene</li>
+            <li><span class="bullet accent-green">→</span> Segments stitched into a final MP4 automatically</li>
+            <li><span class="bullet accent-green">→</span> Preview and download directly in the chat window</li>
+          </ul>
+          <div class="workflow-example">
+            <span class="example-label">Example prompt</span>
+            <p class="example-text">"Create a 20s energetic promo for a new coffee brand called Morning Jolt using these images."</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="section">
+    <div class="container">
+      <div class="section-label accent-green">Features</div>
+      <h2>Everything a Video Studio <span class="accent-magenta">Needs</span></h2>
+      <p class="section-sub">Built for production environments — not just demos.</p>
+      <div class="features-grid">
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <h4>AI Script Generation</h4>
+          <p>Gemini researches topics and writes influencer-optimised scripts with persona assignment and timing built in.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          </div>
+          <h4>AI Video Synthesis</h4>
+          <p>Integrates with Google Veo and Nano Banana for high-quality video segment generation from text and images.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+          </div>
+          <h4>Image-to-Video</h4>
+          <p>Upload your brand assets — logos, product shots, backgrounds — and ClipFoundry animates them into clips.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+          </div>
+          <h4>Scene Splitting &amp; Stitching</h4>
+          <p>Scripts are automatically split into optimally-timed scenes, generated independently, and merged into a single cohesive video.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <h4>Email-Driven Workflow</h4>
+          <p>No dashboards required. The entire production cycle — from idea submission to delivery — runs over email.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+          </div>
+          <h4>PG-13 Content Filter</h4>
+          <p>Built-in negative prompt filtering and content safety checks keep generated video brand-safe and compliant.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </div>
+          <h4>Iterative Feedback Loop</h4>
+          <p>Not happy with the first script? Reply with notes. The agent rewrites and resubmits until you approve.</p>
+        </div>
+
+        <div class="feature-card reveal">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </div>
+          <h4>Self-Hosted Appliance</h4>
+          <p>Runs entirely on your own infrastructure. Full privacy, no cloud lock-in, complete control over your assets.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- TECH STACK -->
+  <section id="tech" class="section section-alt">
+    <div class="container">
+      <div class="section-label accent-green">Under the Hood</div>
+      <h2>Powered by <span class="accent-magenta">Best-in-Class</span> Components</h2>
+      <p class="section-sub">A self-contained stack built for reliability, privacy, and scale.</p>
+      <div class="tech-grid">
+        <div class="tech-card reveal">
+          <div class="tech-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          </div>
+          <div class="tech-body">
+            <h4>Apache Airflow</h4>
+            <p>Orchestrates the entire production pipeline — inbox monitoring, script generation, video DAGs.</p>
+          </div>
+        </div>
+        <div class="tech-card reveal">
+          <div class="tech-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <div class="tech-body">
+            <h4>Google Gemini</h4>
+            <p>Handles intent classification, topic research, persona assignment, and script writing.</p>
+          </div>
+        </div>
+        <div class="tech-card reveal">
+          <div class="tech-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          </div>
+          <div class="tech-body">
+            <h4>Google Veo &amp; Nano Banana</h4>
+            <p>State-of-the-art AI video generation models producing high-quality clips from scene descriptions.</p>
+          </div>
+        </div>
+        <div class="tech-card reveal">
+          <div class="tech-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+          </div>
+          <div class="tech-body">
+            <h4>Shared Storage (MinIO)</h4>
+            <p>Assets are securely passed between agents and production stages via a shared storage layer.</p>
+          </div>
+        </div>
+        <div class="tech-card reveal">
+          <div class="tech-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          </div>
+          <div class="tech-body">
+            <h4>Open WebUI</h4>
+            <p>Chat interface for the Fire-and-Go Studio workflow — upload assets, enter prompts, preview results.</p>
+          </div>
+        </div>
+        <div class="tech-card reveal">
+          <div class="tech-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+          </div>
+          <div class="tech-body">
+            <h4>Docker / Self-Hosted</h4>
+            <p>Entire stack ships as Docker containers — deploy on your infrastructure with full data sovereignty.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section id="get-started" class="section cta-section">
+    <div class="container">
+      <div class="cta-card reveal">
+        <div class="cta-wave"></div>
+        <div class="cta-content">
+          <div class="section-label accent-green">Get Started</div>
+          <h2>Ready to Automate<br /><span class="accent-magenta">Your Video Production?</span></h2>
+          <p>Try the live chat studio, explore the open-source code, or self-host your own ClipFoundry instance.</p>
+          <div class="cta-actions">
+            <a href="https://demo2025g.clipfoundry.ai" target="_blank" class="btn-primary">Open the Studio</a>
+            <a href="https://github.com/lowtouch-ai/clipfoundry" target="_blank" class="btn-outline">Star on GitHub</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <a href="#" class="logo">clip<span>foundry</span><em>.ai</em></a>
+        <p>The autonomous video production agent for creative studios.</p>
+        <p class="footer-license">Licensed under GNU GPLv3. Powered by <a href="https://lowtouch.ai" target="_blank">lowtouch.ai</a></p>
+      </div>
+      <div class="footer-links">
+        <div class="footer-col">
+          <h5>Product</h5>
+          <ul>
+            <li><a href="#how-it-works">How It Works</a></li>
+            <li><a href="#workflows">Workflows</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#tech">Tech Stack</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h5>Resources</h5>
+          <ul>
+            <li><a href="https://github.com/lowtouch-ai/clipfoundry" target="_blank">GitHub</a></li>
+            <li><a href="https://demo2025g.clipfoundry.ai" target="_blank">Live Demo</a></li>
+            <li><a href="https://github.com/lowtouch-ai/clipfoundry/blob/main/README.md" target="_blank">Documentation</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="container">
+        <span>© 2025 ClipFoundry.ai — lowtouch.ai</span>
+        <span>info@lowtouch.ai</span>
+      </div>
+    </div>
+  </footer>
+
+  <button class="scroll-top" id="scrollTop" aria-label="Back to top">↑</button>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
