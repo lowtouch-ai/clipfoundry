@@ -47,7 +47,7 @@ const config: Config = {
         'lt-ink-dim': '#4a4870',
       },
       fontFamily: {
-        sans: ['var(--font-poppins)', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'Oxygen-Sans', 'Ubuntu', 'Cantarell', '"Helvetica Neue"', 'sans-serif'],
         mono: ['JetBrains Mono', 'Menlo', 'monospace'],
       },
       animation: {
