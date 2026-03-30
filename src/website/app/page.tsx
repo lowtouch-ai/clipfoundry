@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 import Hero from '@/components/Hero'
+import HowItWorks from '@/components/HowItWorks'
+import Features from '@/components/Features'
 import Demo from '@/components/Demo'
 import EarlyAccess from '@/components/EarlyAccess'
 import Footer from '@/components/Footer'
@@ -25,6 +27,8 @@ export default function HomePage() {
       <main>
         <Hero />
         <Demo />
+        <HowItWorks />
+        <Features />
         <EarlyAccess />
       </main>
       <Footer />

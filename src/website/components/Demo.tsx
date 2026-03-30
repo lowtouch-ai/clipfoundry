@@ -26,11 +26,13 @@ export default function Demo() {
   const slide = SLIDES[idx]
 
   return (
-    <section className="bg-lt-dark py-24 px-4">
+    <section className="relative bg-lt-surface py-16 px-4">
       <div className="max-w-6xl mx-auto">
-        <p className="text-sm font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent mb-12 text-center">
-          See It In Action
-        </p>
+        <div className="flex flex-col items-center mb-8">
+          <p className="text-base font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent">
+            See It In Action
+          </p>
+        </div>
 
         {/* Carousel wrapper with arrows */}
         <div className="flex items-center gap-4">
@@ -41,21 +43,21 @@ export default function Demo() {
             aria-label="Previous"
             className="shrink-0 w-10 h-10 rounded-full border border-white/20 flex items-center justify-center text-lt-text/60 hover:text-lt-text hover:border-white/50 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
           >
-            ←
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
 
           {/* Side-by-side panels */}
-          <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-5 lg:h-[480px]">
             {/* Script panel */}
-            <div className="bg-lt-surface rounded-2xl p-8 overflow-y-auto max-h-72 lg:max-h-none">
-              <p className="text-xs font-mono uppercase tracking-widest text-lt-accent/60 mb-4">The Script</p>
-              <p className="font-mono text-sm text-lt-text/70 leading-relaxed whitespace-pre-wrap">{slide.script}</p>
+            <div className="bg-lt-dark border border-white/10 rounded-2xl p-8 overflow-y-auto max-h-72 lg:max-h-full">
+              <p className="text-sm font-mono uppercase tracking-widest text-lt-accent/70 mb-4">The Script</p>
+              <p className="font-mono text-lg text-lt-text/70 leading-relaxed whitespace-pre-wrap">{slide.script}</p>
             </div>
 
             {/* Video panel */}
-            <div className="flex flex-col">
-              <p className="text-xs font-mono uppercase tracking-widest text-lt-accent/60 mb-4">The Result</p>
-              <div className="aspect-video w-full rounded-2xl overflow-hidden">
+            <div className="bg-lt-dark border border-white/10 rounded-2xl p-8 flex flex-col h-full min-h-0">
+              <p className="text-sm font-mono uppercase tracking-widest text-lt-accent/70 mb-4">The Result</p>
+              <div className="flex-1 rounded-xl overflow-hidden min-h-0">
                 <iframe
                   src={`https://www.youtube.com/embed/${slide.videoId}`}
                   title="ClipFoundry demo video"
@@ -74,9 +76,12 @@ export default function Demo() {
             aria-label="Next"
             className="shrink-0 w-10 h-10 rounded-full border border-white/20 flex items-center justify-center text-lt-text/60 hover:text-lt-text hover:border-white/50 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
           >
-            →
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
         </div>
+
+      {/* Section transition to lt-dark */}
+      <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-dark pointer-events-none" />
 
         {/* Dot indicators */}
         <div className="flex justify-center gap-2 mt-6">

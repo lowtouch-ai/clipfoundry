@@ -29,7 +29,6 @@ const config: Config = {
 
         // ── Brand hot pink / magenta ──
         'lt-accent':  '#f031d0',
-        'lt-amber':   '#f031d0',
         'lt-pink':    '#f580e8',
         'lt-lavender':'#c060f8',
 
