@@ -1,6 +1,5 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 
 interface Particle {
@@ -20,24 +19,30 @@ const COLORS = [
   'rgba(192,96,248,0.3)',  // lt-lavender dim
 ]
 
+// Simple seeded LCG for deterministic particles (avoids hydration mismatch)
+function seededRand(seed: number) {
+  let s = seed
+  return () => {
+    s = (s * 1664525 + 1013904223) & 0xffffffff
+    return (s >>> 0) / 0xffffffff
+  }
+}
+
+function generateParticles(count: number): Particle[] {
+  const rand = seededRand(42)
+  return Array.from({ length: count }, (_, i) => ({
+    id: i,
+    x: rand() * 100,
+    y: rand() * 100,
+    size: rand() * 2.5 + 1,
+    duration: rand() * 12 + 8,
+    delay: rand() * 6,
+    color: COLORS[Math.floor(rand() * COLORS.length)],
+  }))
+}
+
 export default function FloatingParticles({ count = 30 }: { count?: number }) {
-  const [particles, setParticles] = useState<Particle[]>([])
-
-  useEffect(() => {
-    setParticles(
-      Array.from({ length: count }, (_, i) => ({
-        id: i,
-        x: Math.random() * 100,
-        y: Math.random() * 100,
-        size: Math.random() * 2.5 + 1,
-        duration: Math.random() * 12 + 8,
-        delay: Math.random() * 6,
-        color: COLORS[Math.floor(Math.random() * COLORS.length)],
-      }))
-    )
-  }, [count])
-
-  if (particles.length === 0) return null
+  const particles = generateParticles(count)
 
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">

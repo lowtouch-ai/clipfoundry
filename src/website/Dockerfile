@@ -1,6 +1,6 @@
 FROM node:22.11 AS builder
 WORKDIR /app
-COPY package.json ./
+COPY package.json package-lock.json ./
 RUN npm install
 COPY . .
 ARG NEXT_PUBLIC_SITE_URL
@@ -13,6 +13,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/node_modules/nodemailer ./node_modules/nodemailer
 RUN mkdir -p public
 COPY --from=builder /app/public ./public
 EXPOSE 3000

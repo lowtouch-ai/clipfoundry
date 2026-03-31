@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 
 const RING_COUNT = 5
@@ -15,6 +16,35 @@ const WARP_LINES = Array.from({ length: WARP_COUNT }, (_, i) => ({
 }))
 
 export default function EarlyAccess() {
+  const [status, setStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setStatus('sending')
+    const form = e.currentTarget
+    const data = new FormData(form)
+    const usecase = (form.querySelector('#usecase') as HTMLSelectElement)?.selectedOptions[0]?.text ?? data.get('usecase')
+
+    try {
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name:    data.get('name'),
+          email:   data.get('email'),
+          company: data.get('company'),
+          usecase,
+          notes:   data.get('notes'),
+        }),
+      })
+      if (!res.ok) throw new Error()
+      setStatus('success')
+      form.reset()
+    } catch {
+      setStatus('error')
+    }
+  }
+
   return (
     <section id="early-access" className="relative bg-lt-dark py-16 px-4 overflow-hidden">
 
@@ -110,49 +140,49 @@ export default function EarlyAccess() {
           transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
         >
           <div className="bg-lt-surface border border-white/10 rounded-3xl p-8 sm:p-10">
-            <h2 className="text-3xl sm:text-4xl font-bold text-lt-text mb-8 leading-tight">
+            <h2 className="text-xl sm:text-2xl font-bold text-lt-text mb-6 leading-tight">
               Join the early access list and help us shape the future of agentic video creation.
             </h2>
 
-            <form action="mailto:info@lowtouch.ai" method="post" encType="text/plain" className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-3">
               <div>
-                <label className="block text-base font-medium text-lt-text/70 mb-1.5" htmlFor="name">Full name</label>
+                <label className="block text-sm font-medium text-lt-text/70 mb-1" htmlFor="name">Full name</label>
                 <input
                   id="name"
                   name="name"
                   type="text"
                   required
-                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-4 py-3 text-lt-text text-base focus:outline-none focus:ring-2 focus:ring-lt-accent/40 placeholder:text-lt-text/30"
+                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-3 py-2 text-lt-text text-sm focus:outline-none focus:ring-2 focus:ring-lt-accent/40 placeholder:text-lt-text/30"
                 />
               </div>
 
               <div>
-                <label className="block text-base font-medium text-lt-text/70 mb-1.5" htmlFor="email">Work email</label>
+                <label className="block text-sm font-medium text-lt-text/70 mb-1" htmlFor="email">Work email</label>
                 <input
                   id="email"
                   name="email"
                   type="email"
                   required
-                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-4 py-3 text-lt-text text-base focus:outline-none focus:ring-2 focus:ring-lt-accent/40 placeholder:text-lt-text/30"
+                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-3 py-2 text-lt-text text-sm focus:outline-none focus:ring-2 focus:ring-lt-accent/40 placeholder:text-lt-text/30"
                 />
               </div>
 
               <div>
-                <label className="block text-base font-medium text-lt-text/70 mb-1.5" htmlFor="company">Company</label>
+                <label className="block text-sm font-medium text-lt-text/70 mb-1" htmlFor="company">Company</label>
                 <input
                   id="company"
                   name="company"
                   type="text"
-                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-4 py-3 text-lt-text text-base focus:outline-none focus:ring-2 focus:ring-lt-accent/40 placeholder:text-lt-text/30"
+                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-3 py-2 text-lt-text text-sm focus:outline-none focus:ring-2 focus:ring-lt-accent/40 placeholder:text-lt-text/30"
                 />
               </div>
 
               <div>
-                <label className="block text-base font-medium text-lt-text/70 mb-1.5" htmlFor="usecase">What would you use ClipFoundry for?</label>
+                <label className="block text-sm font-medium text-lt-text/70 mb-1" htmlFor="usecase">What would you use ClipFoundry for?</label>
                 <select
                   id="usecase"
                   name="usecase"
-                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-4 py-3 text-lt-text text-base focus:outline-none focus:ring-2 focus:ring-lt-accent/40"
+                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-3 py-2 text-lt-text text-sm focus:outline-none focus:ring-2 focus:ring-lt-accent/40"
                 >
                   <option value="marketing">Marketing &amp; Advertising</option>
                   <option value="product">Product videos</option>
@@ -162,21 +192,29 @@ export default function EarlyAccess() {
               </div>
 
               <div>
-                <label className="block text-base font-medium text-lt-text/70 mb-1.5" htmlFor="notes">Anything we should know (optional)</label>
+                <label className="block text-sm font-medium text-lt-text/70 mb-1" htmlFor="notes">Anything we should know (optional)</label>
                 <textarea
                   id="notes"
                   name="notes"
                   rows={3}
-                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-4 py-3 text-lt-text text-base focus:outline-none focus:ring-2 focus:ring-lt-accent/40 resize-none placeholder:text-lt-text/30"
+                  className="w-full bg-lt-dark border border-white/15 rounded-xl px-3 py-2 text-lt-text text-sm focus:outline-none focus:ring-2 focus:ring-lt-accent/40 resize-none placeholder:text-lt-text/30"
                 />
               </div>
 
               <button
                 type="submit"
-                className="w-full bg-lt-accent hover:bg-lt-pink text-white text-lg font-semibold py-3 rounded-xl transition-all duration-300 mt-2 shadow-[0_0_20px_rgba(240,49,208,0.3)] hover:shadow-[0_0_36px_rgba(240,49,208,0.55)]"
+                disabled={status === 'sending' || status === 'success'}
+                className="w-full bg-lt-accent hover:bg-lt-pink disabled:opacity-60 disabled:cursor-not-allowed text-white text-base font-semibold py-2.5 rounded-xl transition-all duration-300 mt-2 shadow-[0_0_20px_rgba(240,49,208,0.3)] hover:shadow-[0_0_36px_rgba(240,49,208,0.55)]"
               >
-                Request early access
+                {status === 'sending' ? 'Sending…' : status === 'success' ? 'Request sent!' : 'Request early access'}
               </button>
+
+              {status === 'success' && (
+                <p className="text-sm text-green-400 text-center">We&apos;ll be in touch soon.</p>
+              )}
+              {status === 'error' && (
+                <p className="text-sm text-red-400 text-center">Something went wrong. Please try again.</p>
+              )}
 
               <p className="text-xs text-lt-text/40 text-center">We will only contact you with relevant updates.</p>
             </form>

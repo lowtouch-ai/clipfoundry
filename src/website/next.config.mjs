@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  serverExternalPackages: ['nodemailer'],
   trailingSlash: true,
   poweredByHeader: false,
   images: {
@@ -35,7 +36,7 @@ const nextConfig = {
               "frame-src https://www.youtube.com",
               "object-src 'none'",
               "base-uri 'self'",
-              "form-action 'self'",
+              "form-action 'self' mailto:",
             ].join('; '),
           },
         ],

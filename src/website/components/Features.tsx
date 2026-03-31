@@ -73,10 +73,10 @@ export default function Features() {
 
       <div className="relative max-w-6xl mx-auto">
         <div className="flex flex-col items-center mb-8">
-          <p className="text-base font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent mb-3">
+          <p className="text-sm font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent mb-3">
             Why ClipFoundry
           </p>
-          <h2 className="text-4xl lg:text-[3.25rem] font-bold text-lt-text text-center leading-tight">
+          <h2 className="text-2xl lg:text-3xl font-bold text-lt-text text-center leading-tight">
             Built to stay out of your way
           </h2>
         </div>
@@ -98,8 +98,8 @@ export default function Features() {
                   <Icon size={18} className="text-lt-accent" />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-semibold text-lt-text mb-2">{feature.title}</h3>
-                  <p className="text-xl text-lt-text/65 leading-relaxed">{feature.description}</p>
+                  <h3 className="text-lg font-semibold text-lt-text mb-2">{feature.title}</h3>
+                  <p className="text-sm text-lt-text/65 leading-relaxed">{feature.description}</p>
                 </div>
               </motion.div>
             )

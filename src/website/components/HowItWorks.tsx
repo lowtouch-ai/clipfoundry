@@ -7,7 +7,7 @@ const STEPS = [
     number: '01',
     title: 'Share your idea',
     description:
-      'Email or chat via OpenWebUI. Attach a few images and optionally a script. No script? The agent drafts one for you.',
+      'Email or chat your idea. Attach a few images and optionally a script. No script? The agent drafts one for you.',
   },
   {
     number: '02',
@@ -45,10 +45,10 @@ export default function HowItWorks() {
       <div className="relative max-w-6xl mx-auto">
         <div className="flex flex-col items-center mb-8">
           <div className="w-8 h-px bg-lt-accent mb-4" />
-          <p className="text-base font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent mb-3">
+          <p className="text-sm font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent mb-3">
             How It Works
           </p>
-          <h2 className="text-4xl lg:text-[3.25rem] font-bold text-lt-text text-center leading-tight">
+          <h2 className="text-2xl lg:text-3xl font-bold text-lt-text text-center leading-tight">
             Three steps to a finished video
           </h2>
         </div>
@@ -64,11 +64,11 @@ export default function HowItWorks() {
               transition={{ duration: 0.5, delay: i * 0.12 }}
               className="relative bg-lt-surface/80 backdrop-blur-sm border border-white/10 rounded-3xl p-8 cursor-default"
             >
-              <span className="text-5xl font-bold text-lt-accent/40 leading-none block mb-5">
+              <span className="text-3xl font-bold text-lt-accent/40 leading-none block mb-4">
                 {step.number}
               </span>
-              <h3 className="text-2xl font-semibold text-lt-text mb-2">{step.title}</h3>
-              <p className="text-xl text-lt-text/65 leading-relaxed">{step.description}</p>
+              <h3 className="text-lg font-semibold text-lt-text mb-2">{step.title}</h3>
+              <p className="text-sm text-lt-text/65 leading-relaxed">{step.description}</p>
             </motion.div>
           ))}
         </div>

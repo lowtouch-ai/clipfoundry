@@ -54,21 +54,25 @@ export default function Hero() {
           Now in early access
         </span>
 
+        <p className="text-lt-accent/70 text-sm font-mono uppercase tracking-widest mb-4">
+          Open source agentic AI by lowtouch.ai
+        </p>
+
         <h1
           className="font-bold tracking-tight mb-5 text-white"
-          style={{ fontSize: 'clamp(2.5rem, 6vw, 4.75rem)', lineHeight: 1.05 }}
+          style={{ fontSize: 'clamp(1.75rem, 4vw, 3rem)', lineHeight: 1.05 }}
         >
           From script to screen.<br />
           Completely automated.
         </h1>
 
-        <p className="text-white/55 mb-10 max-w-2xl mx-auto leading-relaxed" style={{ fontSize: 'clamp(18px, 1.6vw, 24px)' }}>
+        <p className="text-white/55 mb-10 max-w-2xl mx-auto leading-relaxed" style={{ fontSize: 'clamp(14px, 1.2vw, 18px)' }}>
           Send an email or chat message. ClipFoundry writes the script, gets your approval, and delivers a finished video — in minutes.
         </p>
 
         <a
           href="#early-access"
-          className="inline-flex items-center gap-2 bg-lt-accent hover:bg-lt-pink text-white text-lg font-semibold px-8 py-3.5 rounded-full transition-all duration-300 shadow-[0_0_20px_rgba(240,49,208,0.35)] hover:shadow-[0_0_40px_rgba(240,49,208,0.60)]"
+          className="inline-flex items-center gap-2 bg-lt-accent hover:bg-lt-pink text-white text-base font-semibold px-6 py-3 rounded-full transition-all duration-300 shadow-[0_0_20px_rgba(240,49,208,0.35)] hover:shadow-[0_0_40px_rgba(240,49,208,0.60)]"
         >
           Get early access <span aria-hidden>→</span>
         </a>

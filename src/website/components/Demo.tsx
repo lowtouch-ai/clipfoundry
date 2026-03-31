@@ -97,8 +97,6 @@ export default function Demo() {
           </button>
         </div>
 
-        <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-dark pointer-events-none" />
-
         <div className="flex justify-center gap-2 mt-6">
           {SLIDES.map((_, i) => (
             <button
@@ -110,6 +108,7 @@ export default function Demo() {
           ))}
         </div>
       </div>
+      <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-dark pointer-events-none" />
     </section>
   )
 }
