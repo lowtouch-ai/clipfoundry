@@ -21,22 +21,43 @@ If your agents aren't monitored like real systems, they're already decaying. Age
   },
 ]
 
+// Aurora background - blue/indigo tones (distinct from Hero's purple/pink)
+const AURORA_MASK = 'radial-gradient(ellipse at 80% 0%, black 20%, transparent 90%)'
+
 export default function Demo() {
   const [idx, setIdx] = useState(0)
   const slide = SLIDES[idx]
 
   return (
-    <section className="relative bg-lt-surface py-16 px-4">
-      <div className="max-w-6xl mx-auto">
+    <section className="relative bg-lt-surface py-16 px-4 overflow-hidden">
+
+      {/* Aurora - blue/indigo tone, different from hero */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div
+          className="absolute inset-[-10%] animate-aurora will-change-transform"
+          style={{
+            backgroundImage: [
+              'repeating-linear-gradient(100deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.9) 7%, transparent 10%, transparent 12%, rgba(255,255,255,0.9) 16%)',
+              'repeating-linear-gradient(100deg, #3b82f6 10%, #a5b4fc 15%, #93c5fd 20%, #ddd6fe 25%, #60a5fa 30%)',
+            ].join(', '),
+            backgroundSize: '300%, 200%',
+            filter: 'blur(10px) invert(1)',
+            opacity: 0.3,
+            mixBlendMode: 'difference',
+            maskImage: AURORA_MASK,
+            WebkitMaskImage: AURORA_MASK,
+          }}
+        />
+      </div>
+
+      <div className="relative max-w-6xl mx-auto">
         <div className="flex flex-col items-center mb-8">
           <p className="text-base font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent">
             See It In Action
           </p>
         </div>
 
-        {/* Carousel wrapper with arrows */}
         <div className="flex items-center gap-4">
-          {/* Left arrow */}
           <button
             onClick={() => setIdx((i) => i - 1)}
             disabled={idx === 0}
@@ -46,18 +67,15 @@ export default function Demo() {
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
 
-          {/* Side-by-side panels */}
           <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-5 lg:h-[480px]">
-            {/* Script panel */}
-            <div className="bg-lt-dark border border-white/10 rounded-2xl p-8 overflow-y-auto max-h-72 lg:max-h-full">
+            <div className="bg-lt-dark border border-white/10 rounded-3xl p-8 overflow-y-auto max-h-72 lg:max-h-full">
               <p className="text-sm font-mono uppercase tracking-widest text-lt-accent/70 mb-4">The Script</p>
               <p className="font-mono text-lg text-lt-text/70 leading-relaxed whitespace-pre-wrap">{slide.script}</p>
             </div>
 
-            {/* Video panel */}
-            <div className="bg-lt-dark border border-white/10 rounded-2xl p-8 flex flex-col h-full min-h-0">
+            <div className="bg-lt-dark border border-white/10 rounded-3xl p-8 flex flex-col h-full min-h-0">
               <p className="text-sm font-mono uppercase tracking-widest text-lt-accent/70 mb-4">The Result</p>
-              <div className="flex-1 rounded-xl overflow-hidden min-h-0">
+              <div className="flex-1 rounded-2xl overflow-hidden min-h-0">
                 <iframe
                   src={`https://www.youtube.com/embed/${slide.videoId}`}
                   title="ClipFoundry demo video"
@@ -69,7 +87,6 @@ export default function Demo() {
             </div>
           </div>
 
-          {/* Right arrow */}
           <button
             onClick={() => setIdx((i) => i + 1)}
             disabled={idx === SLIDES.length - 1}
@@ -80,10 +97,8 @@ export default function Demo() {
           </button>
         </div>
 
-      {/* Section transition to lt-dark */}
-      <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-dark pointer-events-none" />
+        <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-dark pointer-events-none" />
 
-        {/* Dot indicators */}
         <div className="flex justify-center gap-2 mt-6">
           {SLIDES.map((_, i) => (
             <button

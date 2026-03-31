@@ -1,6 +1,20 @@
+import SvgBeams from './SvgBeams'
+import FloatingParticles from './FloatingParticles'
+
+const DOT_GRID_MASKS = [
+  'radial-gradient(ellipse 72% 78% at 50% 50%, black 30%, transparent 70%)',
+  'radial-gradient(ellipse 38% 55% at 15% 25%, black 20%, transparent 65%)',
+  'radial-gradient(ellipse 55% 35% at 85% 15%, black 20%, transparent 60%)',
+  'radial-gradient(ellipse 25% 30% at 70% 80%, black 15%, transparent 55%)',
+  'radial-gradient(ellipse 30% 25% at 25% 75%, black 15%, transparent 55%)',
+].join(', ')
+
 export default function Hero() {
   return (
     <section id="top" className="relative bg-lt-dark pt-28 pb-24 px-6 text-center overflow-hidden">
+
+      {/* Animated SVG beams */}
+      <SvgBeams />
 
       {/* Animated gradient blobs */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -18,25 +32,28 @@ export default function Hero() {
         />
       </div>
 
+      {/* Floating particles */}
+      <FloatingParticles count={35} />
+
       {/* Dot grid overlay */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
-          backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.18) 1px, transparent 1px)',
-          backgroundSize: '32px 32px',
-          maskImage: 'radial-gradient(ellipse 80% 80% at 50% 50%, black, transparent)',
-          WebkitMaskImage: 'radial-gradient(ellipse 80% 80% at 50% 50%, black, transparent)',
+          backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.15) 1px, transparent 1px)',
+          backgroundSize: '24px 24px',
+          maskImage: DOT_GRID_MASKS,
+          WebkitMaskImage: DOT_GRID_MASKS,
+          maskComposite: 'add',
+          WebkitMaskComposite: 'source-over',
         }}
       />
 
       <div className="relative max-w-5xl mx-auto">
-        {/* Badge */}
         <span className="inline-flex items-center gap-2 text-sm font-semibold px-3 py-1 rounded-full border border-lt-accent/30 text-lt-accent/80 mb-6">
           <span className="w-1.5 h-1.5 rounded-full bg-lt-accent animate-pulse" />
           Now in early access
         </span>
 
-        {/* Gradient headline */}
         <h1
           className="font-bold tracking-tight mb-5 text-white"
           style={{ fontSize: 'clamp(2.5rem, 6vw, 4.75rem)', lineHeight: 1.05 }}
@@ -49,7 +66,6 @@ export default function Hero() {
           Send an email or chat message. ClipFoundry writes the script, gets your approval, and delivers a finished video — in minutes.
         </p>
 
-        {/* Glowing CTA */}
         <a
           href="#early-access"
           className="inline-flex items-center gap-2 bg-lt-accent hover:bg-lt-pink text-white text-lg font-semibold px-8 py-3.5 rounded-full transition-all duration-300 shadow-[0_0_20px_rgba(240,49,208,0.35)] hover:shadow-[0_0_40px_rgba(240,49,208,0.60)]"
@@ -58,7 +74,6 @@ export default function Hero() {
         </a>
       </div>
 
-      {/* Section transition to lt-surface */}
       <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-surface pointer-events-none" />
     </section>
   )
