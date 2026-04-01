@@ -8,6 +8,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Name and email are required.' }, { status: 400 })
   }
 
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    return NextResponse.json({ error: 'Mail service not configured.' }, { status: 503 })
+  }
+
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT) || 587,
