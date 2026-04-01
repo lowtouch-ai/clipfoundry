@@ -17,6 +17,7 @@ const WARP_LINES = Array.from({ length: WARP_COUNT }, (_, i) => ({
 
 export default function EarlyAccess() {
   const [status, setStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
+  const [errorMsg, setErrorMsg] = useState('Something went wrong. Please try again.')
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -37,7 +38,11 @@ export default function EarlyAccess() {
           notes:   data.get('notes'),
         }),
       })
-      if (!res.ok) throw new Error()
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setErrorMsg(body.error ?? 'Something went wrong. Please try again.')
+        throw new Error()
+      }
       setStatus('success')
       form.reset()
     } catch {
@@ -213,7 +218,7 @@ export default function EarlyAccess() {
                 <p className="text-sm text-green-400 text-center">We&apos;ll be in touch soon.</p>
               )}
               {status === 'error' && (
-                <p className="text-sm text-red-400 text-center">Something went wrong. Please try again.</p>
+                <p className="text-sm text-red-400 text-center">{errorMsg}</p>
               )}
 
               <p className="text-xs text-lt-text/40 text-center">We will only contact you with relevant updates.</p>

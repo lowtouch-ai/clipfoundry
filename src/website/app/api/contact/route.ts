@@ -9,7 +9,8 @@ export async function POST(req: NextRequest) {
   }
 
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    return NextResponse.json({ error: 'Mail service not configured.' }, { status: 503 })
+    console.error('Mail service not configured: missing SMTP_HOST, SMTP_USER, or SMTP_PASS')
+    return NextResponse.json({ error: 'Service temporarily unavailable. Please try again later.' }, { status: 503 })
   }
 
   const transporter = nodemailer.createTransport({
