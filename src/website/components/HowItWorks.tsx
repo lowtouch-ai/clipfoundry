@@ -1,0 +1,80 @@
+'use client'
+
+import { motion } from 'framer-motion'
+
+const STEPS = [
+  {
+    number: '01',
+    title: 'Share your idea',
+    description:
+      'Email or chat your idea. Attach a few images and optionally a script. No script? The agent drafts one for you.',
+  },
+  {
+    number: '02',
+    title: 'Review & approve',
+    description:
+      'ClipFoundry generates your script and waits for your sign-off before anything starts. You stay in control.',
+  },
+  {
+    number: '03',
+    title: 'Receive your video',
+    description:
+      'Your finished video arrives in 5–10 minutes. Aspect ratio (9:16 or 16:9) is auto-detected from your images.',
+  },
+]
+
+export default function HowItWorks() {
+  return (
+    <section className="relative bg-lt-dark py-16 px-4 overflow-hidden">
+
+      {/* Hexagonal dot grid + magenta & lime radial orbs — like lowtouch Featured Agents */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          backgroundImage: [
+            'radial-gradient(circle at 50% 50%, transparent 1.5px, #041250 0 9px, transparent 9px)',
+            'radial-gradient(circle at 50% 50%, transparent 1.5px, #041250 0 9px, transparent 9px)',
+            'radial-gradient(circle at 15% 50%, rgba(240,49,208,0.65), transparent 55%)',
+            'radial-gradient(circle at 85% 50%, rgba(127,255,0,0.45), transparent 55%)',
+          ].join(', '),
+          backgroundSize: '12px 20.784px, 12px 20.784px, 100% 100%, 100% 100%',
+          backgroundPosition: '0 0, 6px 10.392px, 0 0, 0 0',
+        }}
+      />
+
+      <div className="relative max-w-6xl mx-auto">
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-8 h-px bg-lt-accent mb-4" />
+          <p className="text-sm font-mono font-semibold uppercase tracking-[0.15em] text-lt-accent mb-3">
+            How It Works
+          </p>
+          <h2 className="text-2xl lg:text-3xl font-bold text-lt-text text-center leading-tight">
+            Three steps to a finished video
+          </h2>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {STEPS.map((step, i) => (
+            <motion.div
+              key={step.number}
+              initial={{ opacity: 0, y: 24 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              whileHover={{ y: -6, scale: 1.02, transition: { duration: 0.2 } }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.5, delay: i * 0.12 }}
+              className="relative bg-lt-surface/80 backdrop-blur-sm border border-white/10 rounded-3xl p-8 cursor-default"
+            >
+              <span className="text-3xl font-bold text-lt-accent/40 leading-none block mb-4">
+                {step.number}
+              </span>
+              <h3 className="text-lg font-semibold text-lt-text mb-2">{step.title}</h3>
+              <p className="text-sm text-lt-text/65 leading-relaxed">{step.description}</p>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+
+      <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-b from-transparent to-lt-dark pointer-events-none" />
+    </section>
+  )
+}

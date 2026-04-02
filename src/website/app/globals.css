@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-size: 18px;
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    background-color: #041250;
+    color: #f0e8ff;
+  }
+}
+
+@keyframes blob {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25%       { transform: translate(24px, -48px) scale(1.06); }
+  50%       { transform: translate(-18px, 22px) scale(0.94); }
+  75%       { transform: translate(28px, 18px) scale(1.03); }
+}
