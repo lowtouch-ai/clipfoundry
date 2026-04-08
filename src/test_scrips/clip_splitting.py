@@ -101,7 +101,7 @@ with DAG(
     dag_id='video_script_splitter_integrated',
     default_args=default_args,
     description='Parses raw script input into downstream video configuration',
-    schedule_interval=None,
+    schedule=None,
     start_date=pendulum.today('UTC'),
     catchup=False,
     tags=['video', 'ai'],

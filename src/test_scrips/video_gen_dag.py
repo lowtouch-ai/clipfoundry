@@ -575,7 +575,7 @@ dag = DAG(
     'video_generation_and_merge_pipeline',
     default_args=default_args,
     description='Complete pipeline: Generate multiple videos and merge them',
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     tags=['video', 'generation', 'merge', 'pipeline'],
 )

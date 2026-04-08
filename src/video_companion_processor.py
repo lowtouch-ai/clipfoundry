@@ -1,11 +1,13 @@
 import base64
+import boto3
+from botocore.client import Config as BotoConfig
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.dummy import DummyOperator
+from airflow.operators.empty import EmptyOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 import os
@@ -25,8 +27,10 @@ dag_dir = Path(__file__).parent
 sys.path.insert(0, str(dag_dir))
 from agent.veo import GoogleVeoVideoTool
 from models.gemini import get_gemini_response
+from utils.think_logging import get_logger, set_request_id
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+lot = get_logger("clipfoundry")
 
 default_args = {
     "owner": "video_companion_developers",
@@ -446,11 +450,48 @@ def mark_message_as_read(service, message_id):
     except Exception as e:
         logging.error(f"Failed to mark as read: {e}")
         return False
+
+def download_from_minio(minio_config: dict, s3_paths: list, local_dir: str) -> list:
+    """Download images from MinIO to a local cache directory. Returns local file paths."""
+    # Resolve credentials: env var first, then Airflow Variable as fallback
+    access_key = (
+        os.environ.get("MINIO_ACCESS_KEY")
+        or Variable.get("MINIO_ACCESS_KEY", default_var="minioadmin")
+    )
+    secret_key = (
+        os.environ.get("MINIO_SECRET_KEY")
+        or Variable.get("MINIO_SECRET_KEY", default_var="")
+    )
+    endpoint = minio_config.get("endpoint", "http://minio:9000")
+
+    logging.info(f"download_from_minio: endpoint={endpoint}, paths={s3_paths}, local_dir={local_dir}")
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=BotoConfig(signature_version="s3v4"),
+    )
+    local_paths = []
+    Path(local_dir).mkdir(parents=True, exist_ok=True)
+    for s3_path in s3_paths:
+        # s3://bucket/key  →  bucket, key
+        without_scheme = s3_path.replace("s3://", "")
+        bucket, key = without_scheme.split("/", 1)
+        local_file = str(Path(local_dir) / Path(key).name)
+        logging.info(f"download_from_minio: fetching bucket={bucket} key={key} → {local_file}")
+        s3.download_file(bucket, key, local_file)
+        local_paths.append(local_file)
+        logging.info(f"download_from_minio: OK {s3_path} → {local_file}")
+    return local_paths
+
 def agent_input_task(**kwargs):
     """
     Extract and standardize input from both Email and Agent sources.
     Pushes all raw and normalized data to XCom for downstream tasks.
     """
+    set_request_id(kwargs)
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
     ti = kwargs['ti']
@@ -461,15 +502,32 @@ def agent_input_task(**kwargs):
     email_data = conf.get("email_data", {})
     # 2. Unified Extraction Strategy
     # Check Chat Inputs first (Agent), then fallback to Email Data
-    prompt = chat_inputs.get("message", "") or email_data.get("content", "")
+    prompt = chat_inputs.get("message", "") or email_data.get("content", "") or conf.get("__user_query", "")
     chat_history = chat_inputs.get("history", [])
     logging.info(f"Chat History Length: {len(chat_history)}")
     prompt = prompt.strip()
-    
+
+    # Resolve chat_id once — used for per-run directory isolation
+    chat_id = chat_inputs.get("chat_id", "") or conf.get("__request_id", "manual_run")
+
     # Images might be in 'files' (Agent) or 'images' (Email/Direct)
-    images = chat_inputs.get("files", []) or conf.get("images", [])
-    
-    logging.info(f"Thinking: I've received your request. I'm now analyzing the {len(images)} image(s) and your prompt to understand exactly what you need...")
+    # If image_paths (MinIO URIs) were injected by agentomatic, download them first
+    image_paths_from_minio = conf.get("image_paths", [])
+    minio_config = conf.get("minio_config", {})
+    if image_paths_from_minio and minio_config:
+        local_dir = str(Path(CACHE_ROOT) / chat_id / "minio_images")
+        try:
+            downloaded = download_from_minio(minio_config, image_paths_from_minio, local_dir)
+            images = [{"path": p} for p in downloaded]
+            logging.info(f"agent_input_task: downloaded {len(images)} image(s) from MinIO to {local_dir}")
+        except Exception as _dl_err:
+            logging.error(f"agent_input_task: MinIO download FAILED — {type(_dl_err).__name__}: {_dl_err}", exc_info=True)
+            raise
+    else:
+        images = chat_inputs.get("files", []) or conf.get("images", [])
+        logging.info(f"agent_input_task: no MinIO paths in conf, using files from chat_inputs ({len(images)} image(s))")
+
+    lot.info(f"Thinking: I've received your request. I'm now analyzing the {len(images)} image(s) and your prompt to understand exactly what you need...")
 
     detected_aspect_ratio = "16:9" # Default fallback
     if images and len(images) > 0:
@@ -496,6 +554,7 @@ def agent_input_task(**kwargs):
     
     # 3. Push Standardized Data to XCom
     ti.xcom_push(key="agent_headers", value=agent_headers)
+    ti.xcom_push(key="chat_id", value=chat_id)
     
     # Update email_data to ensure downstream tasks find the content
     # regardless of where it came from
@@ -585,6 +644,7 @@ def validate_input(**kwargs):
     Validate that required elements (prompt and images) are present.
     Routes to appropriate next step based on validation result and source.
     """
+    set_request_id(kwargs)
     ti = kwargs['ti']
     
     # Pull standardized data from agent_input_task
@@ -595,7 +655,7 @@ def validate_input(**kwargs):
     
     logging.info(f"Validating input - Prompt length: {len(prompt)}, Images: {len(images)}")
     
-    logging.info("Thinking: Checking if I have all the necessary ingredients (images and a text description) to start production...")
+    lot.info("Thinking: Checking if I have all the necessary ingredients (images and a text description) to start production...")
     # 4. Validation Logic
     missing = []
     if not prompt:
@@ -617,10 +677,11 @@ def validate_input(**kwargs):
     
     logging.info("Input validation passed")
     ti.xcom_push(key="validation_status", value="valid")
-    logging.info("Thinking: Everything looks good! I have the required inputs to proceed with the creative process.")
+    lot.info("Thinking: Everything looks good! I have the required inputs to proceed with the creative process.")
     return "validate_prompt_clarity"
 
 def validate_prompt_clarity(**kwargs):
+    set_request_id(kwargs)
     ti = kwargs['ti']
     email_data = ti.xcom_pull(key="email_data", task_ids="agent_input")
     chat_history = ti.xcom_pull(key="chat_history", task_ids="agent_input")
@@ -684,7 +745,7 @@ def validate_prompt_clarity(**kwargs):
       "target_duration": 30
     }}
     """
-    logging.info("Thinking: I'm analyzing your request to determine the video style, tone, and script requirements...")
+    lot.info("Thinking: I'm analyzing your request to determine the video style, tone, and script requirements...")
 
     response = get_gemini_response(
         prompt=analysis_prompt,
@@ -767,11 +828,11 @@ def validate_prompt_clarity(**kwargs):
     if has_script:
         logging.info("User provided a script. Routing to Video Generation.")
         ti.xcom_push(key="final_script", value=prompt)
-        logging.info("Thinking: I see you've provided a specific script. I will skip the writing phase and produce the video exactly as you wrote it.")
+        lot.info("Thinking: I see you've provided a specific script. I will skip the writing phase and produce the video exactly as you wrote it.")
         return "split_script"
     else:
         logging.info(f"No script detected (Idea: {idea_description}). Routing to Script Generation.")
-        logging.info(f"Thinking: I understand your idea. I will now write a creative script for you that fits this concept.")
+        lot.info(f"Thinking: I understand your idea. I will now write a creative script for you that fits this concept.")
         return "generate_script"
 
 def send_missing_elements_email(**kwargs):
@@ -1010,6 +1071,7 @@ def send_general_response(**kwargs):
 
 def generate_script(**kwargs):
     """Generate video script based on user's idea."""
+    set_request_id(kwargs)
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
@@ -1052,7 +1114,7 @@ def generate_script(**kwargs):
     # 3. Retry Logic
     try_number = ti.try_number
     logging.info(f"Generating Script - Attempt #{try_number}")
-    logging.info(f"Thinking: Drafting a compelling script for your video (Attempt #{try_number}). Ensuring it fits within the time limit...")
+    lot.info(f"Thinking: Drafting a compelling script for your video (Attempt #{try_number}). Ensuring it fits within the time limit...")
     
     constraint_note = ""
     if try_number > 1:
@@ -1169,7 +1231,7 @@ _{data.get('visual_direction')}_
         "raw_data": data
     }
     ti.xcom_push(key="generated_output", value=generated_output)
-    logging.info(f"Thinking: Script drafted! It's estimated to be around {est_time:.0f} seconds long. Moving on to visual planning.")
+    lot.info(f"Thinking: Script drafted! It's estimated to be around {est_time:.0f} seconds long. Moving on to visual planning.")
     if not is_agent_trigger(conf):
         return 
     else:
@@ -1320,7 +1382,7 @@ def extract_json_from_text(text):
         return None
     
 def split_script_task(**context):
-        
+    set_request_id(context)
     ti = context['ti']
     # --- PROMPTS ---
     SYSTEM_PROMPT_EXTRACTOR = """
@@ -1442,7 +1504,7 @@ def split_script_task(**context):
     
     # logging.info(f"Triggering video generation DAG for thread {thread_id}")
     
-    logging.info("Thinking: I'm breaking down the script into individual scenes to ensure the video flows naturally...")
+    lot.info("Thinking: I'm breaking down the script into individual scenes to ensure the video flows naturally...")
     conversation_history_for_ai = []
     for i in range(0, len(chat_history), 2):
         if i + 1 < len(chat_history):
@@ -1476,7 +1538,7 @@ def split_script_task(**context):
         logging.error("No script lines found")
         return []
 
-    logging.info("Thinking: For each scene, I am calculating the perfect timing and assigning the best visual style to match the spoken words...")
+    lot.info("Thinking: For each scene, I am calculating the perfect timing and assigning the best visual style to match the spoken words...")
     # Step B: Pacing
     final_json = get_gemini_response(
         prompt=f"Optimize these lines for natural video flow:\n{json.dumps(draft_segments)}",
@@ -1509,6 +1571,7 @@ def check_pg13_content(**kwargs):
     Uses Gemini to analyze the script for inappropriate content.
     Returns true if PG-13 or above (R, NC-17), false if below PG-13 (G, PG).
     """
+    set_request_id(kwargs)
     ti = kwargs['ti']
     
     # Get the final script
@@ -1521,7 +1584,7 @@ def check_pg13_content(**kwargs):
         ti.xcom_push(key="is_mature_content", value=False)
         return "prepare_segments"
     
-    logging.info("Thinking: Reviewing the content to ensure it's appropriate for all audiences...")
+    lot.info("Thinking: Reviewing the content to ensure it's appropriate for all audiences...")
     
     # Content moderation prompt
     moderation_prompt = f"""
@@ -1596,7 +1659,7 @@ def check_pg13_content(**kwargs):
             logging.info(f"Explanation: {explanation}")
             return "send_content_warning"
         
-        logging.info("Thinking: Content check passed! The video is appropriate for general audiences (G/PG).")
+        lot.info("Thinking: Content check passed! The video is appropriate for general audiences (G/PG).")
         return "prepare_segments"
         
     except Exception as e:
@@ -1689,6 +1752,7 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
     Process ONE segment at a time.
     CRITICAL: segment_index preserves the ORDER of video generation.
     """
+    set_request_id(context)
     ti = context['ti']
     dag_run = context['dag_run']
     conf = dag_run.conf or {}
@@ -1701,7 +1765,7 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
 
     logging.info(f"Processing segment {segment_index}: {segment}")
     
-    logging.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
+    lot.info(f"Thinking: Animating Scene {segment_index + 1}... converting the text and image into a video segment.")
     video_model = Variable.get('CF.video.model', default_var='mock')
 
     base_instruction = "Maintain consistent eye contact. Keep head position stable in center frame."
@@ -1740,7 +1804,7 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
         video_path = mock_list[path_index]
         logging.info(f"Mock video {segment_index}: {video_path}")
         
-        logging.info(f"Thinking: Scene {segment_index + 1} rendering complete.")
+        lot.info(f"Thinking: Scene {segment_index + 1} rendering complete.")
         # Return dict with index to preserve order
         return {
             'index': segment_index,
@@ -1774,7 +1838,7 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
                 video_path = result['video_paths'][0]
                 logging.info(f"✅ Generated segment {segment_index}: {video_path}")
                 
-                logging.info(f"Thinking: Scene {segment_index + 1} is successfully rendered and ready.")
+                lot.info(f"Thinking: Scene {segment_index + 1} is successfully rendered and ready.")
                 return {
                     'index': segment_index,
                     'video_path': video_path
@@ -1870,6 +1934,7 @@ def collect_and_merge_videos(**context):
     Collects all generated videos in correct order and triggers merge.
     This task runs AFTER all process_segment tasks complete.
     """
+    set_request_id(context)
     ti = context['ti']
     
     # Get all results from the mapped tasks
@@ -1900,8 +1965,10 @@ def collect_and_merge_videos(**context):
         logging.error("❌ Need at least 1 videos to proceed with merge.")
         raise ValueError("Insufficient videos for merge")
     
-    # Generate request ID for merge
-    req_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Generate request ID for merge — sanitize run_id (Airflow manual run_ids contain
+    # colons and plus signs from ISO timestamps which are illegal in filenames on WSL/Windows)
+    raw_run_id = context['dag_run'].run_id or f"merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    req_id = re.sub(r'[:\+\s]', '-', raw_run_id).rstrip('-')
     
     # Push to XCom for merge task
     merge_params = {
@@ -1913,35 +1980,37 @@ def collect_and_merge_videos(**context):
     
     logging.info(f"✅ Ready to merge {len(valid_paths)} videos with req_id: {req_id}")
     
-    logging.info(f"Thinking: All {len(valid_paths)} scenes are rendered. I am collecting them now to prepare for the final edit.")
+    lot.info(f"Thinking: All {len(valid_paths)} scenes are rendered. I am collecting them now to prepare for the final edit.")
     return merge_params
 
 def merge_videos_wrapper(**context):
     """
     Wrapper to call the existing merge logic from video_merger_pipeline.
     """
+    set_request_id(context)
     ti = context['ti']
     dag_run = context['dag_run']
     conf = dag_run.conf or {}
     
     # --- NEW: Path Derivation ---
-    chat_id = conf.get("chat_inputs", {}).get("chat_id", "manual_run")
+    chat_id = conf.get("chat_inputs", {}).get("chat_id", conf.get("__request_id", "manual_run"))
     chat_cache_dir = Path(CACHE_ROOT) / chat_id
-    chat_shared_dir = Path(SHARED_ROOT) / chat_id
-    
+    videos_output_dir = Path(SHARED_ROOT) / "videos"
+    videos_output_dir.mkdir(parents=True, exist_ok=True)
+
     # Get merge parameters
     merge_params = ti.xcom_pull(task_ids='collect_videos', key='merge_params')
-    
+
     if not merge_params:
         raise ValueError("No merge parameters found")
-    
+
     # Inject paths for the merger script
     merge_params['work_dir'] = str(chat_cache_dir)
-    merge_params['output_dir'] = str(chat_shared_dir)
+    merge_params['output_dir'] = str(videos_output_dir)
+
+    logging.info(f"🎬 Starting merge with params: {merge_params} in {chat_cache_dir}, output to {videos_output_dir}")
     
-    logging.info(f"🎬 Starting merge with params: {merge_params} in {chat_cache_dir}, output to {chat_shared_dir}")
-    
-    logging.info(f"Thinking: Stitching all the scenes together into a seamless final video...")
+    lot.info(f"Thinking: Stitching all the scenes together into a seamless final video...")
     # Import the merge logic from the other DAG
     # You might need to adjust the import path based on your structure
     from ffmpg_merger import merge_videos_logic
@@ -1955,12 +2024,13 @@ def merge_videos_wrapper(**context):
     # result = "/appz/home/airflow/dags/video_v1.mp4"
     ti.xcom_push(key="generated_video_path", value=result)
     logging.info(f"✅ Merge complete! Output: {result}")
-    logging.info(f"Thinking: The final video is rendered! Adding final touches and preparing for delivery.")
+    lot.info(f"Thinking: The final video is rendered! Adding final touches and preparing for delivery.")
     
     return {"status": "success", "video_path": result}
 
 def send_video(**kwargs):
     """Send generated video to user."""
+    set_request_id(kwargs)
     ti = kwargs['ti']
     dag_run = kwargs.get('dag_run')
     conf = dag_run.conf if dag_run else {}
@@ -1970,11 +2040,15 @@ def send_video(**kwargs):
     thread_id = ti.xcom_pull(key="thread_id", task_ids="agent_input")
     video_path = ti.xcom_pull(key="generated_video_path", task_ids="merge_all_videos")
     
-    logging.info("Thinking: Sending the final generated video now.")
-    # Check if this is an agent trigger - if so, just return the path
+    lot.info("Thinking: Sending the final generated video now.")
+    base_url = Variable.get("CF.webui.base_url", default_var="https://chat.clipfoundry.ai").rstrip("/")
+    filename = os.path.basename(video_path) if video_path else ""
+    video_url = f"{base_url}/static/videos/{filename}" if filename else ""
+
+    # Check if this is an agent trigger - if so, just return the URL
     if is_agent_trigger(conf):
         logging.info("Agent trigger detected: Skipping video email.")
-        return {"video_path": video_path,"status":"success"}
+        return {"video_url": video_url, "video_path": video_path, "status": "success"}
     
     headers = email_data.get("headers", {})
     sender_email = headers.get("From", "")
@@ -2227,7 +2301,7 @@ with DAG(
     "video_companion_processor",
     description=" creator:0.3",
     default_args=default_args,
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     max_active_runs=3,
     doc_md=readme_content,
@@ -2237,33 +2311,28 @@ with DAG(
     agent_input_task = BranchPythonOperator(
         task_id="agent_input",
         python_callable=agent_input_task,
-        provide_context=True,
         doc_md="Analyzing your request"
     )
     freemium_guard_task = BranchPythonOperator(
         task_id="freemium_guard",
         python_callable=freemium_guard_task,
-        provide_context=True,
         doc_md="Checking usage limits"
     )
     validate_input_task = BranchPythonOperator(
         task_id="validate_input",
         python_callable=validate_input,
-        provide_context=True,
         doc_md="Validating inputs"
     )
 
     validate_prompt_clarity_task = BranchPythonOperator(
         task_id="validate_prompt_clarity",
         python_callable=validate_prompt_clarity,
-        provide_context=True,
         doc_md="Understanding your intent"
     )
 
     send_missing_elements_task = PythonOperator(
         task_id="send_missing_elements_email",
         python_callable=send_missing_elements_email,
-        provide_context=True,
         doc_md="Requesting missing info"
     )
 
@@ -2276,7 +2345,6 @@ with DAG(
     generate_script_task = BranchPythonOperator(  # ✅ Correct for branching
         task_id="generate_script",
         python_callable=generate_script,
-        provide_context=True,
         doc_md="Drafting video script"
     )
 
@@ -2285,18 +2353,16 @@ with DAG(
     send_error_email_task = PythonOperator(
         task_id="send_error_email",
         python_callable=send_error_email,
-        provide_context=True,
         doc_md="Handling error"
     )
 
     send_general_response_task = PythonOperator(
         task_id="send_general_response",
         python_callable=send_general_response,
-        provide_context=True,
         doc_md="Replying to query"
     )
 
-    end_task = DummyOperator(
+    end_task = EmptyOperator(
         task_id="end",
         trigger_rule="none_failed_min_one_success",
         doc_md="Finished"
