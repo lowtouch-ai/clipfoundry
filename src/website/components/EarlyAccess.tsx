@@ -100,10 +100,11 @@ export default function EarlyAccess() {
         <svg viewBox="0 0 200 200" className="absolute w-full h-full" style={{ maxWidth: 700 }}>
           {WARP_LINES.map((line, i) => {
             const rad = (line.angle * Math.PI) / 180
-            const x1  = 100 + Math.cos(rad) * 8
-            const y1  = 100 + Math.sin(rad) * 8
-            const x2  = 100 + Math.cos(rad) * (8 + line.length)
-            const y2  = 100 + Math.sin(rad) * (8 + line.length)
+            const r   = (n: number) => Number(n.toFixed(3))
+            const x1  = r(100 + Math.cos(rad) * 8)
+            const y1  = r(100 + Math.sin(rad) * 8)
+            const x2  = r(100 + Math.cos(rad) * (8 + line.length))
+            const y2  = r(100 + Math.sin(rad) * (8 + line.length))
             return (
               <motion.line
                 key={i}
