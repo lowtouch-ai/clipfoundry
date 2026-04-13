@@ -16,10 +16,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Service temporarily unavailable. Please try again later.' }, { status: 503 })
   }
 
+  const port = Number(process.env.SMTP_PORT) || 587
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: false,
+    port,
+    secure: port === 465,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
 
   try {
     await transporter.sendMail({
-      from: `"ClipFoundry Early Access" <${process.env.SMTP_USER}>`,
+      from: `"ClipFoundry Early Access" <${process.env.FROMMAIL || process.env.SMTP_USER}>`,
       to: process.env.MAIL_TO,
       subject: `ClipFoundry Early Access Request — ${name}`,
       text:
