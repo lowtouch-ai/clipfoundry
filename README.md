@@ -18,7 +18,7 @@ This workflow allows you to interact with ClipFoundry just like you would with a
 **Step 1: Send a Minimal Prompt**
 Send an email to the ClipFoundry address with a simple subject and body. You don't need to write the script yourself.
 
-> **To:** <ClipFoundry Agent Email>
+> **To:** `<ClipFoundry Agent Email>`
 > **Subject:** New Request
 > **Body:** “Create me a reel on NVIDIA CEO’s recent comment on the five layers of AI.”
 
