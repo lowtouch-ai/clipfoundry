@@ -1820,14 +1820,20 @@ def process_single_segment(segment, segment_index, voice_persona, total_segments
             env = segment.get('environment', '')
             emo = segment.get('emotion', '')
             scene_context_str = f"{env}. Atmosphere is {emo}"
-            
-            
+
+            # Was never passed here before, so _run()'s own hardcoded default
+            # (veo-3.0-fast-generate-001) was always what actually got used,
+            # regardless of this Variable's value — now the real model name is
+            # configurable per-deployment instead of baked into agent/veo.py.
+            veo_model_name = Variable.get("CF.veo.model_name", default_var="veo-3.0-fast-generate-001")
+
             result = veo_tool._run(
                 frame1_path=segment.get('image_path'),
                 prompt=segment.get('prompt'),
                 aspect_ratio=segment.get('aspect_ratio', '16:9'),
                 duration_seconds=segment.get('duration', 6),
                 output_dir=str(chat_cache_dir),
+                video_model=veo_model_name,
                 continuity_context=continuity_instruction,
                 voice_persona=voice_persona,
                 scene_context=scene_context_str,
@@ -1888,7 +1894,7 @@ def prepare_segments_for_expand(**context):
                 with open(ref_image_path, "rb") as f:
                     img_bytes = f.read()
                 response = client.models.generate_content(
-                    model="gemini-2.0-flash",
+                    model="gemini-3.6-flash",
                     contents=[
                         types.Content(
                             role="user",
